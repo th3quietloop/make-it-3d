@@ -255,11 +255,15 @@ enum DepthTrackWriter {
 
     // MARK: Pieces
 
-    private static let rec709: [String: Any] = [
-        AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
-        AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
-        AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
-    ]
+    /// Computed rather than stored, because a dictionary of Any is not Sendable
+    /// and a global one is a data race waiting for a second writer.
+    private static var rec709: [String: Any] {
+        [
+            AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+            AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+            AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
+        ]
+    }
 
     /// Describes the one kind of sample the metadata track carries: UTF-8 JSON
     /// under the shot identifier.

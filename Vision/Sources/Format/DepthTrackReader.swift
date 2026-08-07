@@ -202,7 +202,8 @@ enum DepthTrackReader {
                 from: group.items, filteredByIdentifier: DepthTrack.shotIdentifier
             )
             for item in items {
-                guard let text = item.stringValue, let data = text.data(using: .utf8) else { continue }
+                let text = try await item.load(.stringValue)
+                guard let text, let data = text.data(using: .utf8) else { continue }
                 guard let metadata = try? ShotMetadata.decode(from: data) else {
                     throw DepthTrackReaderError.readerFailed(
                         "A shot's metadata is not the JSON this format describes."

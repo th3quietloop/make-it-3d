@@ -108,7 +108,7 @@ final class TrackPairReader {
     /// The frame index stamped into a decoded colour frame, or nil when it is
     /// unreadable.
     static func colorIndex(of buffer: CVPixelBuffer) throws -> Int? {
-        try PixelBuffers.withLock(buffer, readOnly: true) {
+        try PixelBuffers.withLock(buffer, readOnly: true) { () throws -> Int? in
             guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
             return try FrameIndexStrip.read(
                 fromBGRA: base,
@@ -121,7 +121,7 @@ final class TrackPairReader {
 
     /// The frame index stamped into a decoded depth frame's luma plane.
     static func depthIndex(of buffer: CVPixelBuffer) throws -> Int? {
-        try PixelBuffers.withLock(buffer, readOnly: true) {
+        try PixelBuffers.withLock(buffer, readOnly: true) { () throws -> Int? in
             guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return nil }
             return try FrameIndexStrip.read(
                 fromLuma: base,

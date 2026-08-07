@@ -5,7 +5,10 @@ options:
   createIntermediateGroups: true
   deploymentTarget:
     visionOS: "26.0"
-    macOS: "15.0"
+    # 26 rather than the Mac app's 15, because the workbench is only ever run on
+    # this machine and the composition API the player is built on
+    # (AVVideoComposition.Configuration) replaced the mutable classes at 26.
+    macOS: "26.0"
 
 settings:
   base:

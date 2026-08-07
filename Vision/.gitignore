@@ -1,0 +1,9 @@
+# The sign gate's own build directory: a swiftc-built copy of the checker plus
+# the fixtures it writes. Rebuilt from source whenever the sources move.
+.gate/
+
+# xcodegen writes this from project.yml.
+*.xcodeproj
+
+# xcodebuild's derived data for this project.
+.build/
