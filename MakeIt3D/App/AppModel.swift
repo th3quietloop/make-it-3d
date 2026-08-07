@@ -286,9 +286,21 @@ final class AppModel {
         select(first)
 
         if added.count == 1 {
-            toasts.success("Added \(first.displayName)", detail: "Look at the depth before you convert.")
+            toasts.success("Added \(first.displayName)", detail: "Working out the depth now.")
         } else {
-            toasts.success("Added \(added.count) movies", detail: "Showing \(first.displayName).")
+            toasts.success("Added \(added.count) movies", detail: "Working out the depth for each one.")
+        }
+
+        // Auto runs on arrival rather than waiting to be asked.
+        //
+        // This is the fix for a question the UI could not answer: with a Set
+        // the depth button at the top and a Convert button at the bottom, both
+        // filled in the same accent, there was no way to know which came first.
+        // Rather than label the sequence, remove it. By the time anyone has
+        // looked at the picture the depth is already set, and there is exactly
+        // one button left to press.
+        for conversion in added {
+            autoTune(conversion, announce: false)
         }
     }
 
@@ -301,15 +313,33 @@ final class AppModel {
     /// mean". The strength and balance dials stay, because sometimes you want
     /// something other than comfortable, but nobody should have to touch them
     /// to get a good result.
-    func autoTune(_ conversion: Conversion) {
+    /// - Parameter announce: false when this runs by itself on arrival, so the
+    ///   automatic pass does not narrate itself. The panel already shows
+    ///   progress, and a toast for something nobody asked for is noise.
+    func autoTune(_ conversion: Conversion, announce: Bool = true) {
         guard conversion.planningProgress == nil else { return }
-        guard let probe = conversion.probe else {
-            toasts.info("Still reading that file", detail: "Give it a second and try again.")
+        guard conversion.probe != nil else {
+            // Probing is async and a dropped file gets here first. Wait for it
+            // rather than telling the user to try again, which is asking them
+            // to do the app's waiting for it.
+            Task { [weak self] in
+                for _ in 0..<40 {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard let self else { return }
+                    if conversion.probe != nil {
+                        self.autoTune(conversion, announce: announce)
+                        return
+                    }
+                }
+            }
             return
         }
+        guard let probe = conversion.probe else { return }
 
         conversion.planningProgress = 0
-        toasts.info("Looking at every shot", detail: "Sampling the film to work out its depth.")
+        if announce {
+            toasts.info("Looking at every shot", detail: "Sampling the film to work out its depth.")
+        }
 
         Task { [weak self] in
             defer { conversion.planningProgress = nil }
@@ -755,6 +785,16 @@ final class AppModel {
 
     /// Roughly what the export will occupy, from the encoder's own bitrate
     /// rule. Warning before an hour of work beats cleaning up after it.
+    /// The output size, said before you commit rather than discovered after.
+    static func estimatedSize(for probe: SourceProbe) -> String {
+        let bitsPerPixel = 0.15
+        let bitsPerSecond = Double(probe.width * probe.height) * probe.nominalFrameRate * bitsPerPixel
+        let bytes = Int64(bitsPerSecond / 8 * probe.duration.seconds)
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+
     private func estimatedOutputBytes(for probe: SourceProbe) -> Int64 {
         let bitsPerPixel = 0.15
         let bitsPerSecond = Double(probe.width * probe.height) * probe.nominalFrameRate * bitsPerPixel

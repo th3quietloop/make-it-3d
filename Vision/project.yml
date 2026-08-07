@@ -17,6 +17,33 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
 
+    # Both targets, so the headset app can be installed on a device and the
+    # workbench signs the same way. Set here rather than in Xcode's Signing and
+    # Capabilities pane, because xcodegen writes the project from this file and
+    # anything set in the UI is gone at the next generate.
+    DEVELOPMENT_TEAM: 8J4SDPB6A2
+
+    # Xcode recommends turning this on. It cannot be turned on here, and this
+    # is measured rather than assumed: with ENABLE_USER_SCRIPT_SANDBOXING=YES
+    # the build fails with
+    #
+    #   Sandbox: zsh deny(1) file-read-data Scripts/depth_sign_gate.sh
+    #
+    # The sandbox restricts a script phase to files it has declared as inputs
+    # and outputs. The sign gate deliberately declares none: it compiles the
+    # checker across every source folder with swiftc and does its own staleness
+    # check by hashing them, which is what keeps an incremental build fast
+    # without Xcode having to model the dependency.
+    #
+    # It could be made to fit by declaring every source file as an input, but
+    # that list would then have to be kept in step with the sources by hand,
+    # and a gate that silently stops running because someone added a file is
+    # worse than no sandbox.
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+
+    # The other half of Xcode's recommendation, and this one is free.
+    DEAD_CODE_STRIPPING: "YES"
+
 targets:
 
   # The headset app. Everything a person touches lives here.
@@ -30,9 +57,16 @@ targets:
       - path: Sources/App
     settings:
       base:
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGNING_REQUIRED: "NO"
-        CODE_SIGNING_ALLOWED: "NO"
+        # Automatic, so a team can be picked in Signing and Capabilities.
+        # Signing was switched off entirely while this was simulator only,
+        # which also switched off Xcode's ability to offer the choice.
+        #
+        # DEVELOPMENT_TEAM belongs here rather than in the Xcode UI. xcodegen
+        # writes the project from this file, so a team set in the UI survives
+        # exactly until the next `xcodegen generate` and then quietly goes
+        # missing, which reads like a signing bug rather than a regenerated
+        # file.
+        CODE_SIGN_STYLE: Automatic
         PRODUCT_BUNDLE_IDENTIFIER: com.russellwhite.makeit3d.vision
         INFOPLIST_KEY_CFBundleDisplayName: Make It 3D
         ENABLE_PREVIEWS: "YES"
@@ -70,5 +104,4 @@ targets:
       - path: Tools/Gate
     settings:
       base:
-        CODE_SIGN_IDENTITY: "-"
         PRODUCT_BUNDLE_IDENTIFIER: com.russellwhite.makeit3d.depthtracktool

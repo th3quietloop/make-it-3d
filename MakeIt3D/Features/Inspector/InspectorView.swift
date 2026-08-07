@@ -24,6 +24,7 @@ struct InspectorView: View {
     @State private var showCustom = false
     @State private var showAdvanced = false
     @State private var showPlayback = false
+    @State private var isHoveringDestination = false
 
     private var tuning: Binding<EngineTuning> {
         Binding(
@@ -37,6 +38,9 @@ struct InspectorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Tokens.Space.l) {
                     autoSection
+                    Hairline()
+                    outputFacts
+                    Hairline()
                     customSection
                 }
                 .padding(Tokens.Space.m)
@@ -70,6 +74,15 @@ struct InspectorView: View {
                 HStack(spacing: Tokens.Space.xs) {
                     SectionLabel(text: "Custom")
                     Spacer()
+                    // Collapsed rows that say only their own name make you open
+                    // them to find out whether anything changed. Arcade prints
+                    // its current values in the collapsed row; so does this.
+                    if !showCustom {
+                        Text(currentSettingsSummary)
+                            .font(Tokens.Font.caption)
+                            .foregroundStyle(Tokens.Palette.textTertiary)
+                            .lineLimit(1)
+                    }
                     Image(systemName: "chevron.right")
                         .font(Tokens.Font.caption)
                         .foregroundStyle(Tokens.Palette.textTertiary)
@@ -80,7 +93,7 @@ struct InspectorView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Custom depth controls")
-            .accessibilityValue(showCustom ? "Expanded" : "Collapsed")
+            .accessibilityValue(showCustom ? "Expanded" : "\(currentSettingsSummary), collapsed")
 
             if showCustom {
                 VStack(alignment: .leading, spacing: Tokens.Space.l) {
@@ -103,12 +116,12 @@ struct InspectorView: View {
 
     // MARK: Auto
 
-    /// The button that means nobody has to understand any of the controls
-    /// underneath it.
+    /// What the app worked out on its own, and what it is doing about it.
     ///
-    /// It sits above them rather than below, because the intended order is
-    /// press Auto, then adjust if you disagree, not fiddle with dials and
-    /// discover afterwards that the app could have done it.
+    /// This is not a call to action any more. Auto runs the moment a file
+    /// arrives, so by the time anyone reads this it is either working or done.
+    /// That is what removed the priority question: there is no longer a first
+    /// button and a second button, there is a status and then Convert.
     private var autoSection: some View {
         VStack(alignment: .leading, spacing: Tokens.Space.m) {
             if let progress = conversion.planningProgress {
@@ -124,7 +137,10 @@ struct InspectorView: View {
         .animation(Tokens.Motion.panelSpring, value: conversion.planningProgress != nil)
     }
 
-    /// Nothing decided yet. One object, and room around it.
+    /// Auto has not run and is not running, which now only happens if it failed
+    /// or was undone. Outlined, never filled: Convert is the only filled button
+    /// in this app, because every shipping tool in the reference set has exactly
+    /// one and it is always the commit.
     private var invitation: some View {
         VStack(alignment: .leading, spacing: Tokens.Space.s) {
             Button {
@@ -135,13 +151,18 @@ struct InspectorView: View {
                     Text("Set the depth for me")
                 }
                 .font(Tokens.Font.bodyMedium)
-                .foregroundStyle(Tokens.Palette.stage)
+                .foregroundStyle(Tokens.Palette.accent)
                 .frame(maxWidth: .infinity)
+                .padding(.vertical, Tokens.Space.xs)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .modifier(PrimaryActionSurface(isHovering: false, isPressed: false, isFocused: false))
+            .overlay(
+                RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
+                    .strokeBorder(Tokens.Palette.accent.opacity(0.4),
+                                  lineWidth: Tokens.Layout.hairlineWidth)
+            )
             .pressable()
-            .disabled(conversion.probe == nil)
             .help("Finds every cut and works out the best depth for each shot on its own.")
 
             Text("Finds every cut and picks the depth for each shot on its own.")
@@ -149,6 +170,61 @@ struct InspectorView: View {
                 .foregroundStyle(Tokens.Palette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
                 .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
+        }
+    }
+
+    /// What the dials are currently set to, in the fewest words that are true.
+    private var currentSettingsSummary: String {
+        let strength: String
+        if let custom = conversion.tuning.customDisparityPercent {
+            strength = String(format: "%.1f%%", custom)
+        } else {
+            strength = conversion.tuning.strength.label
+        }
+        let balance: String
+        switch conversion.tuning.convergence {
+        case ..<0.4: return "\(strength), like a window"
+        case ..<0.65: balance = "balanced"
+        default: balance = "reaching out"
+        }
+        return "\(strength), \(balance)"
+    }
+
+    // MARK: What you are about to make
+
+    /// The facts about the file, in the space the panel used to leave empty.
+    ///
+    /// Arcade prints the output dimensions next to Generate; VEED prints
+    /// duration and file size next to Export. Committing someone to a job that
+    /// can run for hours without saying what comes out of it is the part of
+    /// this panel that was still missing after the reduction.
+    private var outputFacts: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
+            SectionLabel(text: "You will get")
+            if let probe = conversion.probe {
+                factRow("Spatial video", "\(probe.width) x \(probe.height)")
+                factRow("Length", probe.displayDuration)
+                factRow("About", AppModel.estimatedSize(for: probe))
+                factRow("Takes about", AppModel.humanDuration(
+                    Double(probe.estimatedFrameCount) / conversion.tuning.depthModel.measuredFramesPerSecond
+                ))
+            } else {
+                Text("Reading the file.")
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.textTertiary)
+            }
+        }
+    }
+
+    private func factRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label)
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.textTertiary)
+            Spacer()
+            Text(value)
+                .font(Tokens.Font.monoCaption)
+                .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
         }
     }
 
@@ -161,7 +237,7 @@ struct InspectorView: View {
                 .contentTransition(.numericText())
             ProgressView(value: progress)
                 .tint(Tokens.Palette.accent)
-            Text("Looking at every shot in the film.")
+            Text("Reading the film shot by shot.")
                 .font(Tokens.Font.caption)
                 .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
         }
@@ -225,9 +301,13 @@ struct InspectorView: View {
                 .frame(minHeight: Tokens.Layout.minTarget)
 
             default:
+                // Return commits, the way every export dialog in the
+                // reference set does. It was already bound in the menu bar and
+                // never shown, which is a shortcut nobody discovers.
                 ConvertButton(title: convertTitle, state: convertState) {
                     model.convertSelected()
                 }
+                .help("Convert. Return.")
                 if model.isConverting {
                     Button("Stop") { model.cancelConversion() }
                         .buttonStyle(.plain)
@@ -262,18 +342,24 @@ struct InspectorView: View {
         Button {
             model.chooseOutputFolder()
         } label: {
+            // A row that changes a setting has to look like it can be pressed.
+            // This was a folder glyph and grey text, which is how a caption is
+            // drawn, so nobody would ever have found it.
             HStack(spacing: Tokens.Space.xxs) {
                 Image(systemName: "folder")
                 Text("Saves to \(model.outputFolder.lastPathComponent)")
                     .lineLimit(1)
                     .truncationMode(.middle)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: Tokens.TypeScale.caption - 2))
             }
             .font(Tokens.Font.caption)
-            .foregroundStyle(Tokens.Palette.textTertiary)
+            .foregroundStyle(isHoveringDestination ? Tokens.Palette.accent : Tokens.Palette.textTertiary)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .pressable()
+        .onHover { isHoveringDestination = $0 }
         .help("Change where converted files are saved.")
         .frame(minHeight: Tokens.Layout.minTarget)
     }
@@ -333,7 +419,7 @@ struct InspectorView: View {
             // mechanism. Nobody buying this owns a pair of eye views. Say what
             // changes on screen, and say the tradeoff, because more depth
             // reads as better right up until your eyes give out an hour in.
-            Text("How much 3D. None of them crop the picture: stronger just pushes depth further, and tires your eyes faster.")
+            Text(conversion.tuning.strength.explanation)
                 .font(Tokens.Font.caption)
                 .foregroundStyle(Tokens.Palette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -421,7 +507,6 @@ struct InspectorView: View {
             if showAdvanced {
                 VStack(alignment: .leading, spacing: Tokens.Space.l) {
                     fineTuneControl
-                    synthesisControl
                     gapFillingControl
                     edgeCleanupControl
                     playbackGroup
@@ -486,42 +571,19 @@ struct InspectorView: View {
         }
     }
 
-    /// Which eye gets rebuilt.
-    ///
-    /// This control cannot be understood without knowing that 3D from a flat
-    /// film is invented rather than filmed, so the section says that first.
-    /// "Eye rendering" as a bare label asked the reader to already know.
-    private var synthesisControl: some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            SectionLabel(text: "Where the patching goes")
-
-            Text("Making 3D means inventing a second viewpoint. Moving things sideways uncovers areas the camera never saw, and those have to be patched.")
-                .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.textTertiary)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
-
-            Picker("Where the patching goes", selection: Binding(
-                get: { conversion.tuning.synthesis },
-                set: {
-                    var updated = conversion.tuning
-                    updated.synthesis = $0
-                    model.updateTuning(updated, for: conversion)
-                }
-            )) {
-                ForEach(EngineTuning.Synthesis.allCases) { option in
-                    Text(option.label).tag(option)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            Text(conversion.tuning.synthesis.explanation)
-                .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
+    // The eye rendering picker used to live here. It chose whether both eyes
+    // were rebuilt halfway or the left eye was left exactly as filmed. It is
+    // gone, and the behaviour is permanently the second one.
+    //
+    // Explaining it honestly took three paragraphs about inventing a second
+    // viewpoint and what happens to the areas the camera never saw. A control
+    // that needs three paragraphs is not a control, it is a decision the app
+    // failed to make. None of the reference tools expose their renderer.
+    //
+    // Keeping one eye untouched is the better default and it is measurable:
+    // the brain fuses two views and leans on the sharper one, and the gaps in
+    // the other eye are filled from real pixels in earlier frames rather than
+    // invented, which the disocclusion check verifies at 0 unfilled pixels.
 
     /// Whether gaps get filled from the background plate or smeared over.
     private var gapFillingControl: some View {

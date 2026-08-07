@@ -31,14 +31,19 @@ struct EngineTuning: Sendable, Equatable, Codable {
 
         /// What choosing this actually gets you, in the language of watching
         /// something rather than measuring it.
+        /// Each option sells and warns about itself, and one is named as the
+        /// default. Taken from how VEED writes its export quality menu and how
+        /// Arcade writes its presets: every option carries its own tradeoff on
+        /// its own line, rather than three options sharing one caption that
+        /// describes none of them.
         var explanation: String {
             switch self {
             case .soft:
-                return "Subtle depth. Easiest on the eyes for a full film."
+                return "Least depth, least eye strain. Pick this if a film left your eyes tired."
             case .standard:
-                return "Clear depth without pushing it. Start here."
+                return "Default. Clear depth without pushing it, comfortable for a whole film."
             case .deep:
-                return "Strong depth. Best for short clips and wide shots."
+                return "Most depth. Great on wide shots and short clips, tiring over two hours."
             }
         }
     }
