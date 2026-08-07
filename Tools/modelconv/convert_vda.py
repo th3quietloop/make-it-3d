@@ -224,6 +224,15 @@ def main():
     parser.add_argument(
         "--weights", type=str, default="weights/video_depth_anything_vits.pth"
     )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help=(
+            "Load and run the saved model to compare it against PyTorch. Off by "
+            "default because compiling a graph this size takes far longer than "
+            "converting it, and the artifact is worth writing to disk first."
+        ),
+    )
     args = parser.parse_args()
 
     # The patch grid is 14px, so the input has to divide by 14 cleanly.
@@ -296,6 +305,11 @@ def main():
         compute_precision=ct.precision.FLOAT16,
         compute_units=ct.ComputeUnit.ALL,
         convert_to="mlprogram",
+        # Do not compile on the way out. Converting this graph takes seconds;
+        # compiling it takes far longer, and if the process is interrupted
+        # during that step the package never reaches disk at all. Write the
+        # artifact first, verify it second.
+        skip_model_load=not args.verify,
     )
 
     mlmodel.short_description = (
@@ -317,6 +331,12 @@ def main():
 
     # Prove the saved model runs and agrees with PyTorch. Shape alone would not
     # catch a graph that converted cleanly and computes the wrong thing.
+    if not args.verify:
+        size_mb = sum(f.stat().st_size for f in out.rglob("*") if f.is_file()) / (1024 * 1024)
+        print(f"  package size {size_mb:.1f} MB")
+        print("Re-run with --verify to check it against PyTorch.")
+        return
+
     print("Checking the saved model against PyTorch...", flush=True)
     loaded = ct.models.MLModel(str(out))
     result = loaded.predict({"frames": example.numpy().astype(np.float32)})
