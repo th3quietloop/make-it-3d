@@ -39,6 +39,13 @@ final class WarpRenderer {
         var frameSize: SIMD2<Float>
         var eyeFactor: Float
         var overscan: Float
+        var vertexStep: Float
+        var stretchLimit: Float
+    }
+
+    private struct PlateUniforms {
+        var backgroundLevel: Float
+        var blend: Float
     }
 
     private struct UpsampleUniforms {
@@ -62,6 +69,8 @@ final class WarpRenderer {
     private let lumaPipeline: MTLComputePipelineState
     private let rampPipeline: MTLComputePipelineState
     private let anaglyphPipeline: MTLComputePipelineState
+    private let plateUpdatePipeline: MTLComputePipelineState
+    private let plateSeedPipeline: MTLComputePipelineState
 
     private let tuning: EngineTuning
     private let frameWidth: Int
@@ -71,6 +80,8 @@ final class WarpRenderer {
     private let gridBuffer: MTLBuffer
     private let indexBuffer: MTLBuffer
     private let indexCount: Int
+    /// Grid spacing in normalized source coordinates, for the stretch measure.
+    private let vertexStep: Float
 
     private let textureCache: CVMetalTextureCache
 
@@ -78,6 +89,13 @@ final class WarpRenderer {
     private var lowDisparityTexture: MTLTexture
     private var highDisparityTexture: MTLTexture
     private var lumaTexture: MTLTexture
+
+    /// Double buffered, because a compute pass cannot read and write the same
+    /// texture. Front is the plate as it stands; back is where the update
+    /// writes, and then they swap.
+    private var plateFront: MTLTexture
+    private var plateBack: MTLTexture
+    private var plateSeeded = false
 
     init(frameWidth: Int, frameHeight: Int, tuning: EngineTuning) throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw WarpError.noDevice }
@@ -108,6 +126,8 @@ final class WarpRenderer {
         lumaPipeline = try computePipeline("extractLuma")
         rampPipeline = try computePipeline("depthRamp")
         anaglyphPipeline = try computePipeline("anaglyph")
+        plateUpdatePipeline = try computePipeline("updateBackgroundPlate")
+        plateSeedPipeline = try computePipeline("seedBackgroundPlate")
 
         guard let vertexFunction = library.makeFunction(name: "warpVertex"),
               let fragmentFunction = library.makeFunction(name: "warpFragment") else {
@@ -166,6 +186,7 @@ final class WarpRenderer {
         self.gridBuffer = gridBuffer
         self.indexBuffer = indexBuffer
         self.indexCount = indices.count
+        self.vertexStep = 1.0 / Float(max(columns - 1, 1))
 
         // MARK: Textures
 
@@ -200,6 +221,14 @@ final class WarpRenderer {
             width: frameWidth, height: frameHeight, format: .r32Float,
             usage: [.shaderRead, .shaderWrite]
         )
+        plateFront = try makeTexture(
+            width: frameWidth, height: frameHeight, format: .bgra8Unorm,
+            usage: [.shaderRead, .shaderWrite, .renderTarget]
+        )
+        plateBack = try makeTexture(
+            width: frameWidth, height: frameHeight, format: .bgra8Unorm,
+            usage: [.shaderRead, .shaderWrite, .renderTarget]
+        )
     }
 
     // MARK: Synthesis
@@ -221,11 +250,26 @@ final class WarpRenderer {
 
         try prepareDisparity(disparity, sourceTexture: sourceTexture)
 
+        if tuning.fillDisocclusions {
+            try updateBackgroundPlate(source: sourceTexture, disparity: disparity)
+        }
+
         guard let commandBuffer = queue.makeCommandBuffer() else {
             throw WarpError.pipelineFailed("No command buffer.")
         }
-        encodeWarp(commandBuffer, source: sourceTexture, destination: leftTexture, eye: .left)
-        encodeWarp(commandBuffer, source: sourceTexture, destination: rightTexture, eye: .right)
+
+        if tuning.synthesis == .leftEyeUntouched {
+            // A blit, not a warp. The left eye is the source frame, so copying
+            // it is both exactly correct and half the GPU work of rendering it.
+            if let blit = commandBuffer.makeBlitCommandEncoder() {
+                blit.copy(from: sourceTexture, to: leftTexture)
+                blit.endEncoding()
+            }
+        } else {
+            encodeEye(commandBuffer, source: sourceTexture, destination: leftTexture, eye: .left)
+        }
+
+        encodeEye(commandBuffer, source: sourceTexture, destination: rightTexture, eye: .right)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
 
@@ -295,15 +339,100 @@ final class WarpRenderer {
         }
     }
 
-    private func encodeWarp(
+    /// Throws away the accumulated background.
+    ///
+    /// Called on a scene cut. The plate is a memory of this shot, and carrying
+    /// it across a cut would paint one scene's background into another's gaps.
+    func resetBackgroundPlate() {
+        plateSeeded = false
+    }
+
+    /// Folds this frame's background into the plate.
+    private func updateBackgroundPlate(source: MTLTexture, disparity: Disparity.Field) throws {
+        guard let commandBuffer = queue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw WarpError.pipelineFailed("No compute encoder for the background plate.")
+        }
+
+        // Seeding writes straight into the front buffer, so only an update has
+        // a back buffer to swap in afterwards.
+        let isSeeding = !plateSeeded
+
+        if isSeeding {
+            // First frame of a shot: the plate is simply the frame. Worst case
+            // a gap gets filled with the frame's own content at that spot,
+            // which is no worse than the smear it replaces.
+            encoder.setComputePipelineState(plateSeedPipeline)
+            encoder.setTexture(source, index: 0)
+            encoder.setTexture(plateFront, index: 1)
+            dispatch(encoder, pipeline: plateSeedPipeline, width: frameWidth, height: frameHeight)
+            plateSeeded = true
+        } else {
+            // Background threshold scales with how much depth this shot has, so
+            // a flat scene and a deep one both keep a sensible slice.
+            var uniforms = PlateUniforms(
+                backgroundLevel: disparity.maxNegative * Float(tuning.backgroundLevelFraction),
+                blend: Float(tuning.backgroundPlateBlend)
+            )
+            encoder.setComputePipelineState(plateUpdatePipeline)
+            encoder.setTexture(source, index: 0)
+            encoder.setTexture(highDisparityTexture, index: 1)
+            encoder.setTexture(plateFront, index: 2)
+            encoder.setTexture(plateBack, index: 3)
+            encoder.setBytes(&uniforms, length: MemoryLayout<PlateUniforms>.stride, index: 0)
+            dispatch(encoder, pipeline: plateUpdatePipeline, width: frameWidth, height: frameHeight)
+        }
+
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        if let error = commandBuffer.error {
+            throw WarpError.pipelineFailed(error.localizedDescription)
+        }
+        if !isSeeding { swap(&plateFront, &plateBack) }
+    }
+
+    /// Renders one eye.
+    ///
+    /// Two passes when disocclusion filling is on. The first lays down the
+    /// background plate warped to this eye, which fills the frame with the best
+    /// guess at what is behind everything. The second draws the real frame on
+    /// top and discards anything the mesh stretched past the limit, so the
+    /// plate shows through exactly in the gaps and nowhere else.
+    private func encodeEye(
         _ commandBuffer: MTLCommandBuffer,
         source: MTLTexture,
         destination: MTLTexture,
         eye: Disparity.Eye
     ) {
+        guard tuning.fillDisocclusions, plateSeeded else {
+            encodeWarp(commandBuffer, source: source, destination: destination, eye: eye, clear: true)
+            return
+        }
+        // No stretch limit on the plate pass: it is the fallback layer and has
+        // to cover the whole frame.
+        encodeWarp(
+            commandBuffer, source: plateFront, destination: destination,
+            eye: eye, clear: true, stretchLimit: .greatestFiniteMagnitude
+        )
+        encodeWarp(
+            commandBuffer, source: source, destination: destination,
+            eye: eye, clear: false, stretchLimit: Float(tuning.stretchLimit)
+        )
+    }
+
+    private func encodeWarp(
+        _ commandBuffer: MTLCommandBuffer,
+        source: MTLTexture,
+        destination: MTLTexture,
+        eye: Disparity.Eye,
+        clear: Bool,
+        stretchLimit: Float = .greatestFiniteMagnitude
+    ) {
         let descriptor = MTLRenderPassDescriptor()
         descriptor.colorAttachments[0].texture = destination
-        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].loadAction = clear ? .clear : .load
         descriptor.colorAttachments[0].storeAction = .store
         descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
 
@@ -311,14 +440,18 @@ final class WarpRenderer {
 
         var uniforms = WarpUniforms(
             frameSize: SIMD2<Float>(Float(frameWidth), Float(frameHeight)),
-            eyeFactor: eye.sampleFactor * (tuning.invertDisparitySign ? -1 : 1),
-            overscan: Float(tuning.overscan)
+            eyeFactor: eye.sampleFactor(for: tuning.synthesis)
+                * (tuning.invertDisparitySign ? -1 : 1),
+            overscan: Float(tuning.overscan),
+            vertexStep: vertexStep,
+            stretchLimit: stretchLimit
         )
 
         encoder.setRenderPipelineState(warpPipeline)
         encoder.setVertexBuffer(gridBuffer, offset: 0, index: 0)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<WarpUniforms>.stride, index: 1)
         encoder.setVertexTexture(highDisparityTexture, index: 0)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<WarpUniforms>.stride, index: 0)
         encoder.setFragmentTexture(source, index: 0)
         encoder.drawIndexedPrimitives(
             type: .triangle,

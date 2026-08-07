@@ -218,6 +218,8 @@ struct InspectorView: View {
             if showAdvanced {
                 VStack(alignment: .leading, spacing: Tokens.Space.l) {
                     fineTuneControl
+                    synthesisControl
+                    gapFillingControl
                     edgeCleanupControl
                     playbackGroup
                     modelRow
@@ -278,6 +280,59 @@ struct InspectorView: View {
                     .foregroundStyle(Tokens.Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    /// Which eye gets rebuilt.
+    private var synthesisControl: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
+            SectionLabel(text: "Eye rendering")
+            Picker("Eye rendering", selection: Binding(
+                get: { conversion.tuning.synthesis },
+                set: {
+                    var updated = conversion.tuning
+                    updated.synthesis = $0
+                    model.updateTuning(updated, for: conversion)
+                }
+            )) {
+                ForEach(EngineTuning.Synthesis.allCases) { option in
+                    Text(option.label).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            Text(conversion.tuning.synthesis.explanation)
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Whether gaps get filled from the background plate or smeared over.
+    private var gapFillingControl: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+            HStack {
+                SectionLabel(text: "Rebuild hidden areas")
+                Spacer()
+                Toggle("Rebuild hidden areas", isOn: Binding(
+                    get: { conversion.tuning.fillDisocclusions },
+                    set: {
+                        var updated = conversion.tuning
+                        updated.fillDisocclusions = $0
+                        model.updateTuning(updated, for: conversion)
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .tint(Tokens.Palette.accent)
+                .help("Disocclusion filling from a background plate.")
+            }
+            Text("Shifting the picture uncovers areas the camera never showed for that eye. Relief fills them from earlier frames instead of stretching a neighbouring pixel across.")
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
         }
     }
 

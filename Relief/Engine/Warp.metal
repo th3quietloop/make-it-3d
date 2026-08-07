@@ -5,8 +5,15 @@ using namespace metal;
 
 struct WarpUniforms {
     float2 frameSize;      // output frame size in pixels
-    float  eyeFactor;      // +0.5 for the left eye, -0.5 for the right
+    float  eyeFactor;      // how much of the disparity this eye carries
     float  overscan;       // 0.025 means scale by 1.025 and crop to frame
+    float  vertexStep;     // grid spacing in normalized source coordinates
+    float  stretchLimit;   // discard fragments stretched beyond this factor
+};
+
+struct PlateUniforms {
+    float  backgroundLevel; // disparity at or below this counts as background
+    float  blend;           // how fast fresh background replaces the plate
 };
 
 struct UpsampleUniforms {
@@ -19,6 +26,9 @@ struct UpsampleUniforms {
 struct WarpVertexOut {
     float4 position [[position]];
     float2 texcoord;
+    // How far this triangle got pulled horizontally. 1 is untouched, above 1
+    // is stretched across a disocclusion, below 1 is compressed by an overlap.
+    float  stretch;
 };
 
 // MARK: - Joint bilateral upsampling
@@ -127,6 +137,16 @@ vertex WarpVertexOut warpVertex(
     const float2 uv = gridPositions[vertexID];
     const float d = disparity.sample(disparitySampler, uv).r;
 
+    // Local horizontal stretch, measured against the next grid column. Where
+    // the disparity changes fast, this triangle is spanning a depth edge and
+    // the pixels it draws are smeared foreground rather than real content.
+    const float neighbourD = disparity.sample(
+        disparitySampler, float2(min(uv.x + u.vertexStep, 1.0), uv.y)
+    ).r;
+    const float baseSpan = u.vertexStep * u.frameSize.x;
+    const float warpedSpan = baseSpan + u.eyeFactor * (neighbourD - d);
+    const float stretch = warpedSpan / max(baseSpan, 1e-5);
+
     float2 pixel = uv * u.frameSize;
     pixel.x += u.eyeFactor * d;
 
@@ -141,15 +161,67 @@ vertex WarpVertexOut warpVertex(
                           0.0,
                           1.0);
     out.texcoord = uv;
+    out.stretch = stretch;
     return out;
 }
 
 fragment float4 warpFragment(
     WarpVertexOut in                          [[stage_in]],
+    constant WarpUniforms &u                  [[buffer(0)]],
     texture2d<float, access::sample> source   [[texture(0)]])
 {
+    // Drop the smear. Anything stretched past the limit is a disocclusion, and
+    // whatever is already in the target (the background plate) is a better
+    // answer than a foreground pixel dragged sideways to cover the gap.
+    if (in.stretch > u.stretchLimit) {
+        discard_fragment();
+    }
     constexpr sampler sourceSampler(coord::normalized, filter::linear, address::clamp_to_edge);
     return float4(source.sample(sourceSampler, in.texcoord).rgb, 1.0);
+}
+
+// MARK: - Background plate
+//
+// A running picture of what is behind the moving things.
+//
+// When the warp opens a gap, the content that belongs in it is usually content
+// the camera already showed a moment ago, before the foreground moved across
+// it. Keeping the background as it goes past means the gap can be filled with
+// the real thing instead of a smear.
+//
+// Pixels that are far are written fresh every frame. Pixels that are near are
+// left alone, so whatever background was last seen underneath them survives.
+
+kernel void updateBackgroundPlate(
+    texture2d<float, access::read>  source    [[texture(0)]],
+    texture2d<float, access::read>  disparity [[texture(1)]],
+    texture2d<float, access::read>  oldPlate  [[texture(2)]],
+    texture2d<float, access::write> newPlate  [[texture(3)]],
+    constant PlateUniforms &u                 [[buffer(0)]],
+    uint2 gid                                 [[thread_position_in_grid]])
+{
+    if (gid.x >= newPlate.get_width() || gid.y >= newPlate.get_height()) { return; }
+
+    const float4 current = source.read(gid);
+    const float4 stored = oldPlate.read(gid);
+    const float d = disparity.read(gid).r;
+
+    // Negative disparity is behind the screen plane, which is where background
+    // lives. The further behind, the more confident we are.
+    if (d <= u.backgroundLevel) {
+        newPlate.write(mix(stored, current, u.blend), gid);
+    } else {
+        newPlate.write(stored, gid);
+    }
+}
+
+kernel void seedBackgroundPlate(
+    texture2d<float, access::read>  source [[texture(0)]],
+    texture2d<float, access::write> plate  [[texture(1)]],
+    uint2 gid                              [[thread_position_in_grid]])
+{
+    if (gid.x >= plate.get_width() || gid.y >= plate.get_height()) { return; }
+    plate.write(source.read(gid), gid);
 }
 
 // MARK: - Depth visualisation

@@ -89,6 +89,59 @@ struct EngineTuning: Sendable, Equatable, Codable {
     /// One warp mesh vertex per this many pixels.
     var meshVertexSpacing: Int = 4
 
+    /// How the two eye views are produced.
+    enum Synthesis: String, Sendable, Codable, CaseIterable, Identifiable {
+        /// Both eyes warped by half the disparity each.
+        case symmetric
+        /// The left eye is the source frame untouched and the right eye carries
+        /// the full disparity.
+        case leftEyeUntouched
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .symmetric: return "Balanced"
+            case .leftEyeUntouched: return "Sharp left eye"
+            }
+        }
+
+        var explanation: String {
+            switch self {
+            case .symmetric:
+                return "Both eyes are rebuilt. Artifacts are shared evenly between them."
+            case .leftEyeUntouched:
+                return "The left eye stays exactly as filmed. All the rebuilding lands in the right eye."
+            }
+        }
+    }
+
+    /// Fills disocclusions from a background plate rather than letting the warp
+    /// mesh smear across them.
+    var fillDisocclusions: Bool = true
+
+    /// How far a triangle may stretch before its pixels are treated as a gap
+    /// rather than as content. 1.0 is untouched.
+    var stretchLimit: Double = 1.6
+
+    /// Disparity at or below which a pixel counts as background worth keeping.
+    /// Expressed as a fraction of the frame's own maximum push behind screen,
+    /// so it adapts to the shot rather than to a fixed pixel count.
+    var backgroundLevelFraction: Double = 0.35
+
+    /// How quickly fresh background replaces what the plate already holds.
+    /// Low, because the plate's value is its memory.
+    var backgroundPlateBlend: Double = 0.15
+
+    /// Defaults to keeping the left eye pristine.
+    ///
+    /// Warping both eyes by half spreads the artifacts evenly, which sounds
+    /// fair and is not. The visual system tends to favour the sharper eye, so
+    /// one perfect view plus one rebuilt view generally reads cleaner than two
+    /// half rebuilt views. It also halves the warp work, because only one eye
+    /// has to be rendered.
+    var synthesis: Synthesis = .leftEyeUntouched
+
     // MARK: Depth normalization and stability
 
     /// Per frame, nearness is clamped to these percentiles then scaled to 0...1.

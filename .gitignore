@@ -6,3 +6,8 @@ DerivedData/
 xcuserdata/
 *.xcuserstate
 Icon/
+Tools/modelconv/.venv/
+Tools/modelconv/vda/
+Tools/modelconv/weights/
+Tools/modelconv/*.mlpackage
+Tools/modelconv/debug_node.py

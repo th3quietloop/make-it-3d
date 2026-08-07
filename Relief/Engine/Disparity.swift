@@ -89,18 +89,25 @@ enum Disparity {
         )
     }
 
-    /// Synthesis is symmetric: the left eye samples at x + d/2 and the right
-    /// eye at x - d/2, so neither eye carries the whole shift and the fused
-    /// image stays centred on the original framing.
     enum Eye: Sendable {
         case left
         case right
 
         /// The multiplier applied to d when sampling for this eye.
-        var sampleFactor: Float {
-            switch self {
-            case .left: return 0.5
-            case .right: return -0.5
+        ///
+        /// Symmetric splits the shift so neither eye carries all of it and the
+        /// fused image stays centred on the original framing. Left eye
+        /// untouched gives the left eye a factor of zero, which means it is
+        /// literally the source frame, and hands the whole shift to the right.
+        /// The fused image sits half a disparity off the original framing,
+        /// which nobody can see, in exchange for one eye that is provably
+        /// perfect.
+        func sampleFactor(for synthesis: EngineTuning.Synthesis) -> Float {
+            switch synthesis {
+            case .symmetric:
+                return self == .left ? 0.5 : -0.5
+            case .leftEyeUntouched:
+                return self == .left ? 0 : -1.0
             }
         }
     }

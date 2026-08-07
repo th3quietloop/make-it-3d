@@ -174,6 +174,11 @@ struct VerificationReport: Sendable {
             ))
         }
 
+        // 5. A second opinion from outside this codebase.
+        if let external = SpatialCLI.verify(outputURL) {
+            checks.append(external)
+        }
+
         return VerificationReport(outputURL: outputURL, checks: checks, producedAt: Date())
     }
 

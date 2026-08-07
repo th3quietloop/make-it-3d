@@ -40,6 +40,22 @@ enum SelfTest {
             allPassed = false
         }
 
+        // MARK: Disocclusion filling
+        //
+        // Discarding stretched fragments is only safe if the plate covers what
+        // was discarded, so this proves there are no holes before anything else
+        // gets judged on how it looks.
+        do {
+            let result = try DisocclusionCheck.run()
+            print("")
+            print(result.line)
+            if !result.passed { allPassed = false }
+        } catch {
+            print("")
+            print("FAIL  Disocclusion filling: \(error.localizedDescription)")
+            allPassed = false
+        }
+
         // MARK: Synthetic clip end to end
 
         let workingDirectory = FileManager.default.temporaryDirectory

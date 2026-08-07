@@ -71,6 +71,12 @@ enum ConversionController {
 
                 let raw = try estimator.nearness(from: frame.pixelBuffer)
                 let stabilized = stabilizer.stabilize(raw)
+
+                // The background plate is a memory of the current shot. Across
+                // a cut that memory is worse than nothing, so it goes.
+                if stabilizer.lastFrameWasSceneCut {
+                    renderer.resetBackgroundPlate()
+                }
                 let field = Disparity.field(
                     from: stabilized,
                     frameWidth: request.probe.width,
