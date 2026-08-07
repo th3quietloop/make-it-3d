@@ -85,6 +85,25 @@ enum SelfTest {
             if !passed { allPassed = false }
         }
 
+        // The video model reads a window of frames rather than one, which is a
+        // different loop through the whole pipeline. If it is in the bundle it
+        // gets exercised too, because a path that is never run is a path that
+        // is never known to work.
+        if VideoDepthEstimator.isAvailable, let clip = clips.first {
+            print("")
+            print(String(repeating: "-", count: 60))
+            print("Converting \(clip.lastPathComponent) with the video depth model")
+            var tuning = EngineTuning.default
+            tuning.depthModel = .video
+            let passed = await convert(
+                clip, into: workingDirectory, tuning: tuning, suffix: "_spatial_video"
+            )
+            if !passed { allPassed = false }
+        } else if !VideoDepthEstimator.isAvailable {
+            print("")
+            print("NOTE  Video depth model not in the bundle, windowed path not exercised.")
+        }
+
         print("")
         print(String(repeating: "=", count: 60))
         print(allPassed ? "SELF TEST: PASS" : "SELF TEST: FAIL")
@@ -93,7 +112,12 @@ enum SelfTest {
         return allPassed
     }
 
-    private static func convert(_ url: URL, into directory: URL) async -> Bool {
+    private static func convert(
+        _ url: URL,
+        into directory: URL,
+        tuning: EngineTuning = .default,
+        suffix: String = "_spatial"
+    ) async -> Bool {
         do {
             let probe = try await Ingest.probe(url: url)
             print(String(
@@ -106,10 +130,10 @@ enum SelfTest {
             ))
 
             let outputURL = directory.appendingPathComponent(
-                url.deletingPathExtension().lastPathComponent + "_spatial.mov"
+                url.deletingPathExtension().lastPathComponent + suffix + ".mov"
             )
             let request = ConversionRequest(
-                probe: probe, tuning: .default, outputURL: outputURL
+                probe: probe, tuning: tuning, outputURL: outputURL
             )
 
             let start = Date()
