@@ -18,8 +18,8 @@ import RealityKit
 @MainActor
 enum ScreenMaterial {
 
-    /// The name of the surfacematerial inside StereoScreen.mtlx.
-    private static let materialName = "StereoScreen"
+    /// The material's prim path inside StereoScreen.usda.
+    private static let materialName = "/Root/StereoScreen"
     private static let leftParameter = "LeftEye"
     private static let rightParameter = "RightEye"
 
@@ -39,16 +39,17 @@ enum ScreenMaterial {
 
     /// Builds the per eye material and binds the two eye textures to it.
     static func perEye(textures: EyeTextures) async throws -> ShaderGraphMaterial {
-        guard let url = Bundle.main.url(forResource: "StereoScreen", withExtension: "mtlx") else {
+        guard let url = Bundle.main.url(forResource: "StereoScreen", withExtension: "usda") else {
             throw MaterialError.documentMissing
         }
-        let data = try Data(contentsOf: url)
 
         var material: ShaderGraphMaterial
         do {
-            material = try await ShaderGraphMaterial(materialXLabel: materialName, data: data)
+            material = try await ShaderGraphMaterial(named: materialName, from: url)
         } catch {
-            throw MaterialError.notLoadable(error.localizedDescription)
+            throw MaterialError.notLoadable(
+                "\(error.localizedDescription) Loading \(materialName) from \(url.lastPathComponent)."
+            )
         }
 
         try material.setParameter(name: leftParameter, value: .textureResource(textures.left))

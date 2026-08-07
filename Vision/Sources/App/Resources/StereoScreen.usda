@@ -1,0 +1,77 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    doc = """The screen material: one surface that shows a different picture to each eye.
+
+    This is the only part of the stereo path that is not plain Metal, and it is
+    here because visionOS does not have CustomMaterial. On macOS and iOS a
+    surface shader would do this in six lines; on visionOS CustomMaterial is
+    marked unavailable, and the supported way to branch on which eye is being
+    drawn is the RealityKit node realitykit_geometry_switch_cameraindex.
+
+    The warp does not happen here. Both eye views are already finished, in
+    Metal, at video rate, by StereoWarpRenderer. All this material does is
+    choose between two textures ninety times a second, which is the cheapest
+    thing a fragment shader can be asked to do.
+
+    Written by hand rather than by Reality Composer Pro, because the graph is
+    four nodes and a hand written file is one a person can read, diff and
+    review. It is the same USD Shade structure RCP emits.
+    """
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+def Xform "Root"
+{
+    def Material "StereoScreen"
+    {
+        # The two eye views, bound from Swift every time a file is opened.
+        # Declared on the material rather than on the image nodes so they
+        # become named parameters that setParameter can reach.
+        asset inputs:LeftEye = @@
+        asset inputs:RightEye = @@
+
+        token outputs:mtlx:surface.connect = </Root/StereoScreen/UnlitSurface.outputs:out>
+        token outputs:realitykit:vertex
+
+        def Shader "LeftSample"
+        {
+            uniform token info:id = "ND_image_color3"
+            asset inputs:file.connect = </Root/StereoScreen.inputs:LeftEye>
+            string inputs:filtertype = "linear"
+            token outputs:out
+        }
+
+        def Shader "RightSample"
+        {
+            uniform token info:id = "ND_image_color3"
+            asset inputs:file.connect = </Root/StereoScreen.inputs:RightEye>
+            string inputs:filtertype = "linear"
+            token outputs:out
+        }
+
+        def Shader "EyeSwitch"
+        {
+            uniform token info:id = "ND_realitykit_geometry_switch_cameraindex_color3"
+            # Mono falls back to the left eye, which is the one that was never
+            # synthesized. Anywhere there is only one camera, the honest answer
+            # is the frame exactly as filmed.
+            color3f inputs:mono.connect = </Root/StereoScreen/LeftSample.outputs:out>
+            color3f inputs:left.connect = </Root/StereoScreen/LeftSample.outputs:out>
+            color3f inputs:right.connect = </Root/StereoScreen/RightSample.outputs:out>
+            color3f outputs:out
+        }
+
+        def Shader "UnlitSurface"
+        {
+            uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+            color3f inputs:color.connect = </Root/StereoScreen/EyeSwitch.outputs:out>
+            float inputs:opacity = 1
+            # The picture is the picture. A film graded once should not be
+            # graded again on the way to the eye.
+            bool inputs:applyPostProcessToneMap = 0
+            token outputs:out
+        }
+    }
+}

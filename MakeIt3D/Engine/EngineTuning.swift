@@ -101,17 +101,23 @@ struct EngineTuning: Sendable, Equatable, Codable {
 
         var label: String {
             switch self {
-            case .symmetric: return "Balanced"
-            case .leftEyeUntouched: return "Sharp left eye"
+            case .symmetric: return "Share it"
+            case .leftEyeUntouched: return "Keep one eye perfect"
             }
         }
 
+        /// Said in terms of what you would see, and which one to pick.
+        ///
+        /// The previous copy said artifacts are "shared evenly" and that the
+        /// rebuilding "lands in the right eye", which is true and answers a
+        /// question nobody asked. What someone actually wants to know here is
+        /// what the tradeoff costs them and which side to come down on.
         var explanation: String {
             switch self {
             case .symmetric:
-                return "Both eyes are rebuilt. Artifacts are shared evenly between them."
+                return "Both eyes get moved half as far. The patched areas are smaller, but they show up in both eyes at once."
             case .leftEyeUntouched:
-                return "The left eye stays exactly as filmed. All the rebuilding lands in the right eye."
+                return "Your left eye sees the film exactly as it was shot, every pixel real. All the patching goes to the right eye. Usually the better trade: one clean eye gives your brain something correct to lock onto."
             }
         }
     }

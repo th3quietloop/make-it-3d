@@ -487,10 +487,21 @@ struct InspectorView: View {
     }
 
     /// Which eye gets rebuilt.
+    ///
+    /// This control cannot be understood without knowing that 3D from a flat
+    /// film is invented rather than filmed, so the section says that first.
+    /// "Eye rendering" as a bare label asked the reader to already know.
     private var synthesisControl: some View {
         VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            SectionLabel(text: "Eye rendering")
-            Picker("Eye rendering", selection: Binding(
+            SectionLabel(text: "Where the patching goes")
+
+            Text("Making 3D means inventing a second viewpoint. Moving things sideways uncovers areas the camera never saw, and those have to be patched.")
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
+
+            Picker("Where the patching goes", selection: Binding(
                 get: { conversion.tuning.synthesis },
                 set: {
                     var updated = conversion.tuning
