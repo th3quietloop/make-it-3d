@@ -250,24 +250,32 @@ def main():
     # Warm up eagerly first. This is what records the intermediate resolutions
     # the patched head then uses as literals, so the trace never sees a shape
     # read at all.
+    #
+    # Each of these passes is a ViT over 32 images on the CPU and takes minutes.
+    # They are the expensive part of this script by a wide margin: the Core ML
+    # conversion itself is seconds.
     print("Warming up to record the fixed shapes...")
     with torch.no_grad():
         eager_out = wrapper(example)
-    print(f"  output {tuple(eager_out.shape)}")
+    print(f"  output {tuple(eager_out.shape)}", flush=True)
 
-    print("Tracing...")
+    print("Tracing...", flush=True)
     with torch.no_grad():
         traced = torch.jit.trace(wrapper, example, strict=False)
-    print("  traced")
+    print("  traced", flush=True)
 
     # Sanity: the traced graph has to agree with the eager model, otherwise the
     # trace captured the wrong branch somewhere.
     with torch.no_grad():
         traced_out = traced(example)
     delta = (eager_out - traced_out).abs().max().item()
-    print(f"  trace vs eager max delta: {delta:.6f}")
+    print(f"  trace vs eager max delta: {delta:.6f}", flush=True)
     if delta > 1e-3:
         raise SystemExit("traced graph disagrees with the eager model")
+
+    # Hand the reference output to the Core ML check below, so the saved model
+    # is compared against real numbers rather than only inspected for shape.
+    reference = eager_out.numpy()
 
     import coremltools as ct
 
@@ -305,14 +313,27 @@ def main():
 
     out = HERE / args.out
     mlmodel.save(str(out))
-    print(f"Saved {out}")
+    print(f"Saved {out}", flush=True)
 
-    # Prove the saved model runs and produces something depth shaped.
-    print("Checking the saved model...")
+    # Prove the saved model runs and agrees with PyTorch. Shape alone would not
+    # catch a graph that converted cleanly and computes the wrong thing.
+    print("Checking the saved model against PyTorch...", flush=True)
     loaded = ct.models.MLModel(str(out))
     result = loaded.predict({"frames": example.numpy().astype(np.float32)})
-    depth = result["depth"]
+    depth = np.asarray(result["depth"])
     print(f"  output shape {depth.shape}, range {depth.min():.4f} to {depth.max():.4f}")
+
+    # Float16 compute, so exact equality is not the bar. Correlation is: the
+    # depth has to rank the scene the same way PyTorch does.
+    flat_ct = depth.reshape(-1).astype(np.float64)
+    flat_pt = reference.reshape(-1).astype(np.float64)
+    correlation = np.corrcoef(flat_ct, flat_pt)[0, 1]
+    spread = flat_pt.max() - flat_pt.min()
+    relative_error = np.abs(flat_ct - flat_pt).mean() / max(spread, 1e-6)
+    print(f"  correlation with PyTorch: {correlation:.6f}")
+    print(f"  mean absolute error: {relative_error * 100:.3f}% of range")
+    if correlation < 0.99:
+        raise SystemExit("the converted model does not agree with PyTorch")
 
     size_mb = sum(
         f.stat().st_size for f in out.rglob("*") if f.is_file()

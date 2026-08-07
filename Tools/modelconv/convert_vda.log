@@ -1,0 +1,23 @@
+xFormers not available
+xFormers not available
+xFormers not available
+xFormers not available
+  patched the temporal head for a fixed 32 frame window
+Building vits at 32 frames of 518x518
+Warming up to record the fixed shapes...
+  output (1, 32, 518, 518)
+Tracing...
+/Users/russell/Developer/268_macos_media_relief/Tools/modelconv/vda/video_depth_anything/dinov2_layers/patch_embed.py:73: TracerWarning: Converting a tensor to a Python boolean might cause the trace to be incorrect. We can't record the data flow of Python values, so this value will be treated as a constant in the future. This means that the trace might not generalize to other inputs!
+  assert H % patch_H == 0, f"Input image height {H} is not a multiple of patch height {patch_H}"
+/Users/russell/Developer/268_macos_media_relief/Tools/modelconv/vda/video_depth_anything/dinov2_layers/patch_embed.py:74: TracerWarning: Converting a tensor to a Python boolean might cause the trace to be incorrect. We can't record the data flow of Python values, so this value will be treated as a constant in the future. This means that the trace might not generalize to other inputs!
+  assert W % patch_W == 0, f"Input image width {W} is not a multiple of patch width: {patch_W}"
+/Users/russell/Developer/268_macos_media_relief/Tools/modelconv/vda/video_depth_anything/dinov2.py:183: TracerWarning: Converting a tensor to a Python boolean might cause the trace to be incorrect. We can't record the data flow of Python values, so this value will be treated as a constant in the future. This means that the trace might not generalize to other inputs!
+  if npatch == N and w == h:
+  traced
+  trace vs eager max delta: 0.000000
+  patched the coremltools scalar cast for one element shapes
+Converting to Core ML...
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/2595 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  47%|████▋     | 1210/2595 [00:00<00:00, 12099.26 ops/s]Converting PyTorch Frontend ==> MIL Ops:  93%|█████████▎| 2420/2595 [00:00<00:00, 8265.95 ops/s] Converting PyTorch Frontend ==> MIL Ops: 100%|█████████▉| 2594/2595 [00:00<00:00, 8815.97 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 92.27 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:  12%|█▏        | 11/95 [00:00<00:00, 106.13 passes/s]Running MIL default pipeline:  23%|██▎       | 22/95 [00:00<00:00, 105.04 passes/s]Running MIL default pipeline:  36%|███▌      | 34/95 [00:00<00:00, 87.66 passes/s] Running MIL default pipeline:  47%|████▋     | 45/95 [00:00<00:00, 93.83 passes/s]Running MIL default pipeline:  59%|█████▉    | 56/95 [00:00<00:00, 82.20 passes/s]Running MIL default pipeline:  68%|██████▊   | 65/95 [00:01<00:01, 30.00 passes/s]Running MIL default pipeline:  82%|████████▏ | 78/95 [00:01<00:00, 42.09 passes/s]Running MIL default pipeline:  95%|█████████▍| 90/95 [00:01<00:00, 53.65 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:01<00:00, 55.16 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 137.23 passes/s]

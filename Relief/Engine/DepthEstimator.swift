@@ -59,6 +59,11 @@ final class CoreMLDepthEstimator: DepthEstimator {
     private var scaledBuffer: CVPixelBuffer
     private let scaleContext: vImageConverter?
 
+    /// True when the model wants a planar float tensor rather than an image.
+    private let takesTensor: Bool
+    /// Reused input tensor, allocated lazily for the tensor path.
+    private var tensorInput: MLMultiArray?
+
     static let modelResourceName = "DepthAnythingV2SmallF16"
 
     static func bundledModelURL() -> URL? {
@@ -94,29 +99,55 @@ final class CoreMLDepthEstimator: DepthEstimator {
 
         let description = model.modelDescription
 
-        guard let input = description.inputDescriptionsByName.first(where: {
-            $0.value.type == .image
-        }) else {
-            throw DepthEstimatorError.unexpectedModelInterface("It takes no image input.")
-        }
-        guard let constraint = input.value.imageConstraint else {
-            throw DepthEstimatorError.unexpectedModelInterface("Its input has no image constraint.")
-        }
+        // Two shapes of depth model are accepted. Apple's Depth Anything V2
+        // package takes a colour image; a model converted from PyTorch here
+        // takes a planar float tensor. Reading which one it is at load time
+        // means a new model is a file swap rather than a code change.
+        let imageInput = description.inputDescriptionsByName.first { $0.value.type == .image }
+        let tensorInput = description.inputDescriptionsByName.first { $0.value.type == .multiArray }
+
         guard let output = description.outputDescriptionsByName.first(where: {
             $0.value.type == .image || $0.value.type == .multiArray
         }) else {
             throw DepthEstimatorError.unexpectedModelInterface("It produces no depth output.")
         }
 
+        let input: (key: String, value: MLFeatureDescription)
+        let width: Int
+        let height: Int
+
+        if let imageInput, let constraint = imageInput.value.imageConstraint {
+            input = imageInput
+            width = constraint.pixelsWide
+            height = constraint.pixelsHigh
+            takesTensor = false
+        } else if let tensorInput, let constraint = tensorInput.value.multiArrayConstraint {
+            // Expected [1, 3, H, W].
+            let shape = constraint.shape.map(\.intValue)
+            guard shape.count == 4, shape[1] == 3 else {
+                throw DepthEstimatorError.unexpectedModelInterface(
+                    "Expected an input shaped [1, 3, height, width], found \(shape)."
+                )
+            }
+            input = tensorInput
+            width = shape[3]
+            height = shape[2]
+            takesTensor = true
+        } else {
+            throw DepthEstimatorError.unexpectedModelInterface(
+                "It takes neither an image nor a [1, 3, height, width] tensor."
+            )
+        }
+
         inputName = input.key
         outputName = output.key
-        inputSize = (constraint.pixelsWide, constraint.pixelsHigh)
+        inputSize = (width, height)
 
         var buffer: CVPixelBuffer?
         let status = CVPixelBufferCreate(
             kCFAllocatorDefault,
-            constraint.pixelsWide,
-            constraint.pixelsHigh,
+            width,
+            height,
             Ingest.pixelFormat,
             [kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary] as CFDictionary,
             &buffer
@@ -131,11 +162,16 @@ final class CoreMLDepthEstimator: DepthEstimator {
     func nearness(from frame: CVPixelBuffer) throws -> NearnessMap {
         try scale(frame, into: scaledBuffer)
 
+        let inputValue: MLFeatureValue
+        if takesTensor {
+            inputValue = MLFeatureValue(multiArray: try planarTensor(from: scaledBuffer))
+        } else {
+            inputValue = MLFeatureValue(pixelBuffer: scaledBuffer)
+        }
+
         let provider: MLFeatureProvider
         do {
-            provider = try MLDictionaryFeatureProvider(
-                dictionary: [inputName: MLFeatureValue(pixelBuffer: scaledBuffer)]
-            )
+            provider = try MLDictionaryFeatureProvider(dictionary: [inputName: inputValue])
         } catch {
             throw DepthEstimatorError.inferenceFailed(error.localizedDescription)
         }
@@ -158,6 +194,51 @@ final class CoreMLDepthEstimator: DepthEstimator {
             return try Self.nearnessMap(fromArray: array)
         }
         throw DepthEstimatorError.inferenceFailed("The depth output was not an image or array.")
+    }
+
+    /// Repacks the scaled BGRA frame as planar RGB in 0...1.
+    ///
+    /// Models converted from PyTorch here take a tensor rather than an image,
+    /// and the conversion bakes the ImageNet normalization into the graph, so
+    /// this only has to reorder the channels and divide by 255.
+    private func planarTensor(from buffer: CVPixelBuffer) throws -> MLMultiArray {
+        let width = inputSize.width
+        let height = inputSize.height
+        let planeStride = width * height
+
+        let array: MLMultiArray
+        if let tensorInput { array = tensorInput } else {
+            do {
+                array = try MLMultiArray(
+                    shape: [1, 3, NSNumber(value: height), NSNumber(value: width)],
+                    dataType: .float32
+                )
+            } catch {
+                throw DepthEstimatorError.inferenceFailed(error.localizedDescription)
+            }
+            tensorInput = array
+        }
+
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else {
+            throw DepthEstimatorError.inferenceFailed("Couldn't address the scaled frame.")
+        }
+        let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+        let pointer = array.dataPointer.assumingMemoryBound(to: Float.self)
+
+        for y in 0..<height {
+            let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<width {
+                let pixel = row.advanced(by: x * 4)
+                let offset = y * width + x
+                pointer[offset] = Float(pixel[2]) / 255.0
+                pointer[planeStride + offset] = Float(pixel[1]) / 255.0
+                pointer[planeStride * 2 + offset] = Float(pixel[0]) / 255.0
+            }
+        }
+        return array
     }
 
     // MARK: Input scaling
