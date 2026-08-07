@@ -412,12 +412,36 @@ struct InspectorView: View {
     }
 
     private var modelRow: some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
-            SectionLabel(text: "Depth model")
-            Text(CoreMLDepthEstimator.modelResourceName)
-                .font(Tokens.Font.monoCaption)
-                .foregroundStyle(Tokens.Palette.textSecondary)
-                .textSelection(.enabled)
+        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
+            SectionLabel(text: "Depth reading")
+
+            if VideoDepthEstimator.isAvailable {
+                Picker("Depth reading", selection: Binding(
+                    get: { conversion.tuning.depthModel },
+                    set: {
+                        var updated = conversion.tuning
+                        updated.depthModel = $0
+                        model.updateTuning(updated, for: conversion)
+                    }
+                )) {
+                    ForEach(EngineTuning.DepthModel.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                Text(conversion.tuning.depthModel.explanation)
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
+            } else {
+                Text(CoreMLDepthEstimator.modelResourceName)
+                    .font(Tokens.Font.monoCaption)
+                    .foregroundStyle(Tokens.Palette.textSecondary)
+                    .textSelection(.enabled)
+            }
         }
     }
 

@@ -33,83 +33,33 @@ enum ConversionController {
         onEvent: @escaping @Sendable (ConversionEvent) -> Void
     ) async {
         do {
-            let estimator = try CoreMLDepthEstimator()
-            let stabilizer = Stabilizer(tuning: request.tuning)
-            let renderer = try WarpRenderer(
-                frameWidth: request.probe.width,
-                frameHeight: request.probe.height,
-                tuning: request.tuning
-            )
-            let writer = try await SpatialWriter.open(
-                outputURL: request.outputURL,
-                probe: request.probe,
-                tuning: request.tuning
-            )
-            let source = try await Ingest.FrameSource.open(probe: request.probe)
-
-            try writer.start()
+            let stage = try await Stage(request: request)
             onEvent(.started(totalFrames: request.probe.estimatedFrameCount))
 
-            // Eye buffers come from a pool rather than being allocated once and
-            // reused. The writer retains whatever it is handed and the encoder
-            // reads it asynchronously, so a frame is not free to be overwritten
-            // just because append returned.
-            let pool = try FramePool(
-                width: request.probe.width, height: request.probe.height
-            )
+            // The video model is used when it is present and asked for, and the
+            // per frame model otherwise. Falling back rather than failing means
+            // an app built without the video model still converts.
+            let useVideoModel = request.tuning.depthModel == .video
+                && VideoDepthEstimator.isAvailable
 
-            var framesDone = 0
-            let total = max(request.probe.estimatedFrameCount, 1)
-
-            while let frame = try source.next() {
-                if Task.isCancelled {
-                    source.cancel()
-                    writer.cancel()
-                    onEvent(.cancelled)
-                    return
-                }
-
-                let raw = try estimator.nearness(from: frame.pixelBuffer)
-                let stabilized = stabilizer.stabilize(raw)
-
-                // The background plate is a memory of the current shot. Across
-                // a cut that memory is worse than nothing, so it goes.
-                if stabilizer.lastFrameWasSceneCut {
-                    renderer.resetBackgroundPlate()
-                }
-                let field = Disparity.field(
-                    from: stabilized,
-                    frameWidth: request.probe.width,
-                    tuning: request.tuning
-                )
-
-                let leftBuffer = try pool.next()
-                let rightBuffer = try pool.next()
-
-                try renderer.synthesize(
-                    source: frame.pixelBuffer,
-                    disparity: field,
-                    into: leftBuffer,
-                    and: rightBuffer
-                )
-
-                try writer.append(
-                    StereoPair(left: leftBuffer, right: rightBuffer, time: frame.time)
-                )
-
-                framesDone += 1
-                onEvent(.progress(
-                    fraction: min(Double(framesDone) / Double(total), 1.0),
-                    framesDone: framesDone
-                ))
+            let cancelled: Bool
+            if useVideoModel {
+                cancelled = try await runWindowed(stage, request: request, onEvent: onEvent)
+            } else {
+                cancelled = try await runPerFrame(stage, request: request, onEvent: onEvent)
             }
 
-            try await writer.finish()
+            if cancelled {
+                onEvent(.cancelled)
+                return
+            }
+
+            try await stage.writer.finish()
 
             let report = await VerificationReport.verify(
                 outputURL: request.outputURL,
                 sourceProbe: request.probe,
-                writtenFrameCount: writer.frameCount
+                writtenFrameCount: stage.writer.frameCount
             )
             onEvent(.finished(report))
 
@@ -118,5 +68,213 @@ enum ConversionController {
         } catch {
             onEvent(.failed(error.localizedDescription))
         }
+    }
+
+    /// The parts every run needs, built once.
+    private final class Stage {
+        let renderer: WarpRenderer
+        let writer: SpatialWriter
+        let source: Ingest.FrameSource
+        let pool: FramePool
+        let request: ConversionRequest
+
+        init(request: ConversionRequest) async throws {
+            self.request = request
+            renderer = try WarpRenderer(
+                frameWidth: request.probe.width,
+                frameHeight: request.probe.height,
+                tuning: request.tuning
+            )
+            writer = try await SpatialWriter.open(
+                outputURL: request.outputURL,
+                probe: request.probe,
+                tuning: request.tuning
+            )
+            source = try await Ingest.FrameSource.open(probe: request.probe)
+            // Eye buffers come from a pool rather than being allocated once and
+            // reused. The writer retains whatever it is handed and the encoder
+            // reads it asynchronously, so a frame is not free to be overwritten
+            // just because append returned.
+            pool = try FramePool(
+                width: request.probe.width, height: request.probe.height
+            )
+            try writer.start()
+        }
+
+        /// Turns one frame plus its depth into a written stereo pair.
+        func emit(frame: Ingest.Frame, nearness: NearnessMap) throws {
+            let field = Disparity.field(
+                from: nearness,
+                frameWidth: request.probe.width,
+                tuning: request.tuning
+            )
+            let left = try pool.next()
+            let right = try pool.next()
+            try renderer.synthesize(
+                source: frame.pixelBuffer, disparity: field, into: left, and: right
+            )
+            try writer.append(StereoPair(left: left, right: right, time: frame.time))
+        }
+
+        func abandon() {
+            source.cancel()
+            writer.cancel()
+        }
+    }
+
+    // MARK: One frame at a time
+
+    /// Returns true if the run was cancelled.
+    private static func runPerFrame(
+        _ stage: Stage,
+        request: ConversionRequest,
+        onEvent: @escaping @Sendable (ConversionEvent) -> Void
+    ) async throws -> Bool {
+        let estimator = try CoreMLDepthEstimator()
+        let stabilizer = Stabilizer(tuning: request.tuning)
+
+        var framesDone = 0
+        let total = max(request.probe.estimatedFrameCount, 1)
+
+        while let frame = try stage.source.next() {
+            if Task.isCancelled {
+                stage.abandon()
+                return true
+            }
+
+            let raw = try estimator.nearness(from: frame.pixelBuffer)
+            let stabilized = stabilizer.stabilize(raw)
+
+            // The background plate is a memory of the current shot. Across a
+            // cut that memory is worse than nothing, so it goes.
+            if stabilizer.lastFrameWasSceneCut {
+                stage.renderer.resetBackgroundPlate()
+            }
+
+            try stage.emit(frame: frame, nearness: stabilized)
+
+            framesDone += 1
+            onEvent(.progress(
+                fraction: min(Double(framesDone) / Double(total), 1.0),
+                framesDone: framesDone
+            ))
+        }
+        return false
+    }
+
+    // MARK: A window at a time
+
+    /// Returns true if the run was cancelled.
+    ///
+    /// The video model reads a run of frames, so the loop gathers a window,
+    /// runs once, and writes out the leading part of it. The tail of each
+    /// window is look ahead context: it gets recomputed in the next window with
+    /// more to go on, so its first pass is thrown away.
+    ///
+    /// Each window picks its own scale for relative depth, which would show up
+    /// as a jump every time the window advanced. The overlapping frames are the
+    /// fix: fitting the new window onto the previous window's values for the
+    /// same frames lines the two up before anything is written.
+    private static func runWindowed(
+        _ stage: Stage,
+        request: ConversionRequest,
+        onEvent: @escaping @Sendable (ConversionEvent) -> Void
+    ) async throws -> Bool {
+        let estimator = try VideoDepthEstimator()
+        let stabilizer = Stabilizer(tuning: request.tuning)
+
+        let windowLength = estimator.windowLength
+        let stride = estimator.stride
+
+        var window: [Ingest.Frame] = []
+        var carriedMaps: [NearnessMap] = []
+        var framesDone = 0
+        let total = max(request.probe.estimatedFrameCount, 1)
+        var reachedEnd = false
+
+        func process(isFinal: Bool) throws -> Bool {
+            guard !window.isEmpty else { return false }
+
+            var maps = try estimator.nearness(forWindow: window.map(\.pixelBuffer))
+
+            // Line this window up with the previous one over the frames they
+            // share, so relative depth does not step at the seam.
+            if !carriedMaps.isEmpty {
+                let count = min(carriedMaps.count, maps.count)
+                var incoming: [Float] = []
+                var reference: [Float] = []
+                for index in 0..<count {
+                    incoming.append(contentsOf: maps[index].values)
+                    reference.append(contentsOf: carriedMaps[index].values)
+                }
+                let fit = WindowAlignment.fit(incoming: incoming, reference: reference)
+                maps = maps.map { WindowAlignment.apply($0, scale: fit.scale, shift: fit.shift) }
+            }
+
+            // How many of this window's frames are results rather than context.
+            let emitCount = isFinal
+                ? min(window.count, maps.count)
+                : min(stride, maps.count)
+
+            for index in 0..<emitCount {
+                if Task.isCancelled { return true }
+
+                // Normalization only, no temporal averaging: the model already
+                // handled time, and smoothing on top would only add lag.
+                let normalized = stabilizer.normalize(maps[index])
+                if index == 0 && framesDone == 0 {
+                    stage.renderer.resetBackgroundPlate()
+                }
+                try stage.emit(frame: window[index], nearness: normalized)
+
+                framesDone += 1
+                onEvent(.progress(
+                    fraction: min(Double(framesDone) / Double(total), 1.0),
+                    framesDone: framesDone
+                ))
+            }
+
+            if isFinal {
+                window.removeAll()
+                carriedMaps.removeAll()
+                return false
+            }
+
+            // Keep the overlap frames as the head of the next window, along
+            // with the depth this window gave them, which is what the next
+            // window gets aligned against.
+            window.removeFirst(emitCount)
+            carriedMaps = Array(maps[emitCount...])
+            return false
+        }
+
+        while true {
+            if Task.isCancelled {
+                stage.abandon()
+                return true
+            }
+
+            if let frame = try stage.source.next() {
+                window.append(frame)
+            } else {
+                reachedEnd = true
+            }
+
+            if reachedEnd {
+                if try process(isFinal: true) {
+                    stage.abandon()
+                    return true
+                }
+                break
+            }
+
+            if window.count == windowLength {
+                if try process(isFinal: false) {
+                    stage.abandon()
+                    return true
+                }
+            }
+        }
+        return false
     }
 }

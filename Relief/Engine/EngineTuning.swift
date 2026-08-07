@@ -116,6 +116,37 @@ struct EngineTuning: Sendable, Equatable, Codable {
         }
     }
 
+    /// Which depth model reads the footage.
+    enum DepthModel: String, Sendable, Codable, CaseIterable, Identifiable {
+        /// Depth Anything V2 Small. One frame at a time, smoothed afterwards.
+        case perFrame
+        /// Video Depth Anything Small. Reads a window of frames and is steady
+        /// across a shot by construction rather than by averaging.
+        case video
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .perFrame: return "Fast"
+            case .video: return "Steady"
+            }
+        }
+
+        var explanation: String {
+            switch self {
+            case .perFrame:
+                return "Reads each frame on its own. Quicker, but depth can drift slightly across a shot."
+            case .video:
+                return "Reads a run of frames together, so depth holds still. Slower, and the better choice for anything long."
+            }
+        }
+    }
+
+    /// Defaults to the per frame model, because it is the one that is always
+    /// present. The video model is used when it has been built into the app.
+    var depthModel: DepthModel = .perFrame
+
     /// Fills disocclusions from a background plate rather than letting the warp
     /// mesh smear across them.
     var fillDisocclusions: Bool = true

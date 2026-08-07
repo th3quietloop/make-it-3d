@@ -225,6 +225,28 @@ buffer group sample buffer does not carry the `vide` media type the input requir
 handed and the encoder reads it asynchronously, so a frame is not free to be overwritten just
 because `append` returned. Reusing one pair corrupts frames in flight and wedges the writer.
 
+## Where the eye views come from
+
+The left eye is the source frame, untouched, and the right eye carries the whole
+disparity. Warping both eyes by half sounds fairer and is not: the visual system
+favours the sharper eye, so one perfect view next to one rebuilt view reads
+cleaner than two half rebuilt ones. It is also cheaper, because the left eye is
+a blit rather than a render. Symmetric is still available under More controls.
+
+Shifting a frame sideways uncovers areas that eye never saw. The mesh used to
+stretch a neighbouring pixel across those gaps, which is why the export cropped
+in 2.5% to hide the smear. Relief now keeps a **background plate**: as
+foreground moves across a shot, whatever is behind it gets remembered, and the
+gaps are filled from that instead. The warp measures its own horizontal stretch
+per triangle and discards anything past the limit, so the plate shows through
+exactly where the smear used to be and nowhere else. The plate resets on a scene
+cut, because a memory of the previous shot is worse than no memory at all.
+
+Discarding pixels is only safe if something is underneath them, so
+`DisocclusionCheck` renders the hardest case (a hard depth edge at Deep
+strength) and counts how many output pixels came out as nothing. It runs as part
+of `--selftest`.
+
 ## The sandbox decision
 
 Relief is ad hoc signed, unsandboxed, and has no entitlements. This is a personal tool run
