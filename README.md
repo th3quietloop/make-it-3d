@@ -247,6 +247,42 @@ Discarding pixels is only safe if something is underneath them, so
 strength) and counts how many output pixels came out as nothing. It runs as part
 of `--selftest`.
 
+## Depth models
+
+Relief ships **Depth Anything V2 Small** (Apache-2.0), which reads one frame at
+a time. Per frame models have no memory, so their output wobbles slightly even
+when the picture barely moves, and Relief smooths that with an exponential
+moving average. That trades flicker for lag and fixes neither properly.
+
+**Video Depth Anything Small** (also Apache-2.0) is the actual fix: it reads a
+window of frames and is steady across a shot by construction. The upstream
+project ships no Core ML build, and the request for one had been open since
+January 2025, so `Tools/modelconv/convert_vda.py` is the build step. The engine
+side is done either way: `WindowedDepthEstimator` sits alongside the per frame
+protocol, and `ConversionController` picks a loop based on which model is asked
+for, falling back to per frame whenever the video model is not in the bundle.
+
+```bash
+cd Tools/modelconv && uv venv --python 3.11 .venv
+uv pip install --python .venv/bin/python torch==2.7.0 torchvision==0.22.0 coremltools einops opencv-python-headless easydict huggingface_hub
+.venv/bin/python convert_vda.py --frames 32
+```
+
+Three things had to be dealt with to get it through the converter, all recorded
+in that script. The model reads frame counts and patch grids off its tensors,
+which under a trace become one element arrays rather than integers, and
+coremltools stops at the int() cast. The window size is fixed at conversion
+time, so those values are pinned as literals instead. The temporal head's
+intermediate resolutions are recorded on a warmup pass and then used as
+constants. And the converter's scalar cast is widened to accept a one element
+array, because a one element array holding 37 and the integer 37 mean the same
+thing to every op downstream.
+
+The window is 32 frames with 10 frames of look ahead, matching upstream. Each
+window picks its own scale for relative depth, so the overlapping frames are
+fitted onto the previous window's values before anything is written. Without
+that the depth steps visibly at every seam.
+
 ## The sandbox decision
 
 Relief is ad hoc signed, unsandboxed, and has no entitlements. This is a personal tool run
