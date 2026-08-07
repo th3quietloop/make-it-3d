@@ -147,6 +147,9 @@ enum Tokens {
         static let toastWidth: CGFloat = 320
         /// The depth gauge that replaced the raw pixel readouts.
         static let gaugeHeight: CGFloat = 8
+        /// The per shot ribbon under the scrubber. Tall enough to read as a
+        /// map of the film, short enough not to compete with the picture.
+        static let shotStripHeight: CGFloat = 14
         static let gaugeMarker: CGFloat = 3
         /// Reserved height for the inspector's action stack, so the primary
         /// button never moves as a row changes status.

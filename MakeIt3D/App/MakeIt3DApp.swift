@@ -22,6 +22,11 @@ struct MakeIt3DApp: App {
             exit(IconRenderer.runFromCommandLine() ? 0 : 1)
         }
 
+        if DepthContentCheck.shouldRun() {
+            Task.detached { exit(await DepthContentCheck.run() ? 0 : 1) }
+            RunLoop.main.run()
+        }
+
         if SelfTest.shouldRun() {
             let writerProbeOnly = CommandLine.arguments.contains("--writerprobe")
             Task.detached {

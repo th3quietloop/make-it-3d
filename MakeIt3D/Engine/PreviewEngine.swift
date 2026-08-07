@@ -192,6 +192,10 @@ actor PreviewEngine {
         return (field.maxPositive, field.maxNegative)
     }
 
+    /// What the model saw in the visible frame, before normalization. The
+    /// disparity range above describes the settings; this describes the shot.
+    var depthContent: DepthContent { stabilizer?.lastContent ?? .unknown }
+
     // MARK: Plumbing
 
     private func loadEstimator() throws -> CoreMLDepthEstimator {

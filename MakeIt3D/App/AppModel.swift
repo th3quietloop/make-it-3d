@@ -37,6 +37,12 @@ final class Conversion: Identifiable {
     var thumbnail: CGImage?
     var report: VerificationReport?
 
+    /// The film broken into shots, each with settings solved for it. nil until
+    /// Auto has been run on this file.
+    var shotPlan: ShotPlan?
+    /// Progress of the analysis pass, 0 to 1. nil when not running.
+    var planningProgress: Double?
+
     /// When this run started, so the queue can say how much longer it has.
     var startedAt: Date?
 
@@ -284,6 +290,77 @@ final class AppModel {
         } else {
             toasts.success("Added \(added.count) movies", detail: "Showing \(first.displayName).")
         }
+    }
+
+    // MARK: Auto
+
+    /// Reads the whole file, finds the cuts, and solves the depth settings for
+    /// each shot.
+    ///
+    /// This is the answer to "why should I have to know what Soft and Deep
+    /// mean". The strength and balance dials stay, because sometimes you want
+    /// something other than comfortable, but nobody should have to touch them
+    /// to get a good result.
+    func autoTune(_ conversion: Conversion) {
+        guard conversion.planningProgress == nil else { return }
+        guard let probe = conversion.probe else {
+            toasts.info("Still reading that file", detail: "Give it a second and try again.")
+            return
+        }
+
+        conversion.planningProgress = 0
+        toasts.info("Looking at every shot", detail: "Sampling the film to work out its depth.")
+
+        Task { [weak self] in
+            defer { conversion.planningProgress = nil }
+            do {
+                let estimator = try CoreMLDepthEstimator()
+                let tuning = conversion.tuning
+                let plan = try await ShotPlanner.plan(
+                    for: probe,
+                    estimator: estimator,
+                    tuning: tuning
+                ) { fraction in
+                    Task { @MainActor in conversion.planningProgress = fraction }
+                }
+                guard let self else { return }
+                self.applied(plan, to: conversion)
+            } catch {
+                self?.toasts.failure(
+                    "Couldn't analyse \(conversion.displayName)",
+                    detail: error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func applied(_ plan: ShotPlan, to conversion: Conversion) {
+        conversion.shotPlan = plan
+        guard let first = plan.shots.first else {
+            toasts.failure("Couldn't find any shots", detail: "The file may be too short to sample.")
+            return
+        }
+
+        // The live dials follow whichever shot the playhead is in, so the
+        // inspector keeps telling the truth about what you are looking at.
+        let atPlayhead = plan.shot(at: CMTime(seconds: playhead, preferredTimescale: 600)) ?? first
+        conversion.tuning = AutoTune.apply(atPlayhead.settings, to: conversion.tuning)
+        refreshPreview(frameChanged: false)
+
+        toasts.success(
+            plan.shots.count == 1 ? "Tuned this shot" : "Tuned \(plan.shots.count) shots",
+            detail: plan.summary
+        )
+    }
+
+    /// Follows the playhead into a new shot and adopts its settings.
+    func adoptShotSettings(at seconds: Double, for conversion: Conversion) {
+        guard let plan = conversion.shotPlan else { return }
+        let time = CMTime(seconds: seconds, preferredTimescale: 600)
+        guard let shot = plan.shot(at: time) else { return }
+        let updated = AutoTune.apply(shot.settings, to: conversion.tuning)
+        guard updated != conversion.tuning else { return }
+        conversion.tuning = updated
     }
 
     /// Picks where exports land. Reachable from the inspector as well as from
@@ -537,6 +614,10 @@ final class AppModel {
     /// genuinely changed.
     func scrub(to seconds: Double) {
         playhead = max(0, seconds)
+        // With a plan in hand the dials follow the playhead across cuts, so
+        // the inspector is always describing the shot you are looking at
+        // rather than the one you started on.
+        if let selection { adoptShotSettings(at: playhead, for: selection) }
         refreshPreview(frameChanged: true)
     }
 
@@ -748,7 +829,8 @@ final class AppModel {
         let request = ConversionRequest(
             probe: probe,
             tuning: conversion.tuning,
-            outputURL: outputURL(for: conversion)
+            outputURL: outputURL(for: conversion),
+            shotPlan: conversion.shotPlan
         )
         let frozenTuning = conversion.tuning
         conversion.startedAt = Date()

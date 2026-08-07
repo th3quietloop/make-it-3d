@@ -17,12 +17,15 @@ struct DepthReading: Equatable {
     let behind: Float
     /// Frame width the pixels were measured against.
     let frameWidth: Int
+    /// What the model actually saw before normalization. Without this the
+    /// gauge can only describe the settings, which is what it used to do.
+    var content: DepthContent = .unknown
 
     /// Comfort budgets as a fraction of frame width. Forward is the strict one:
     /// content in front of the screen plane is what makes eyes tire, so it gets
     /// roughly a third of the room that content behind the screen gets.
-    private static let forwardBudget = 0.010
-    private static let behindBudget = 0.030
+    static let forwardBudget = 0.010
+    static let behindBudget = 0.030
 
     /// 0 means flat. 1 means sitting exactly on the comfort budget. Above 1 is
     /// past it. The larger of the two directions wins, because comfort is
@@ -36,7 +39,9 @@ struct DepthReading: Equatable {
     }
 
     enum Verdict: Equatable {
-        case flat
+        /// The shot itself has almost no depth in it. This is about the
+        /// footage, not the settings, and no setting fixes it.
+        case noDepthInShot
         case gentle
         case comfortable
         case strong
@@ -44,7 +49,7 @@ struct DepthReading: Equatable {
 
         var label: String {
             switch self {
-            case .flat: return "Almost flat"
+            case .noDepthInShot: return "Flat shot"
             case .gentle: return "Gentle depth"
             case .comfortable: return "Good depth"
             case .strong: return "Strong depth"
@@ -55,8 +60,8 @@ struct DepthReading: Equatable {
         /// One line, in the language of watching something, not measuring it.
         var explanation: String {
             switch self {
-            case .flat:
-                return "This shot is nearly 2D. Try Deep, or pick a frame with more going on."
+            case .noDepthInShot:
+                return "There is barely any real depth in this shot, so turning the strength up will make it wobble rather than pop."
             case .gentle:
                 return "Subtle, easy to watch for a whole film."
             case .comfortable:
@@ -69,9 +74,21 @@ struct DepthReading: Equatable {
         }
     }
 
+    /// The verdict, from the footage first and the settings second.
+    ///
+    /// Order matters here. The gauge used to read `load` alone, and because
+    /// every frame is normalized to a full nearness range before disparity is
+    /// computed, `load` is a function of the strength and convergence settings
+    /// and nothing else. It reported one of three fixed answers, one per
+    /// preset, on every shot of every film. A flat wall and a canyon were
+    /// indistinguishable to it.
+    ///
+    /// A shot with no real depth is now called out as such, whatever the
+    /// settings say, because that is the one situation where changing the
+    /// settings is the wrong move.
     var verdict: Verdict {
+        if content.isMeasured, content.confidence < 0.12 { return .noDepthInShot }
         switch load {
-        case ..<0.15: return .flat
         case ..<0.5: return .gentle
         case ..<1.0: return .comfortable
         case ..<1.4: return .strong
@@ -81,9 +98,14 @@ struct DepthReading: Equatable {
 
     /// The exact numbers, for the tooltip.
     var precise: String {
-        String(
+        let base = String(
             format: "Forward %.1f px, behind %.1f px, on a %d px frame.",
             forward, abs(behind), frameWidth
+        )
+        guard content.isMeasured else { return base }
+        return base + String(
+            format: " Depth spread %.2f, confidence %.0f%%.",
+            content.spread, content.confidence * 100
         )
     }
 }

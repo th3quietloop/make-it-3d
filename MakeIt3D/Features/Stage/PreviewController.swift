@@ -61,6 +61,8 @@ final class PreviewController {
     private var smoothedLoadBehind: Float = 0
     private var hasSmoothingHistory = false
     private let smoothingAlpha: Float = 0.35
+    /// The settings the last reading was taken under.
+    private var lastTuning: EngineTuning?
 
     // MARK: Updating
 
@@ -77,10 +79,17 @@ final class PreviewController {
         renderTask?.cancel()
         let modeChanged = currentMode != mode
         currentMode = mode
+        let tuningChanged = lastTuning != tuning
+        lastTuning = tuning
 
-        // A new frame invalidates the smoothing history; a parameter change
-        // does not, because it is the same picture with a different number.
-        if frameChanged { hasSmoothingHistory = false }
+        // A new frame invalidates the smoothing history. So does a change to
+        // the settings, which is the fix for a real lie: the smoother exists to
+        // stop the readout jittering as depth wobbles frame to frame, but when
+        // the strength itself changes the new value is not a wobble, it is the
+        // answer. Easing toward it meant Auto could set a strength whose own
+        // arithmetic says "good depth" while the gauge underneath still read
+        // "gentle" for another few refreshes.
+        if frameChanged || tuningChanged { hasSmoothingHistory = false }
         if modeChanged { isWigglePlaying = false }
 
         renderTask = Task { [weak self] in
@@ -142,12 +151,18 @@ final class PreviewController {
 
         if let range = await engine.disparityRange(tuning: tuning),
            let width = await engine.frameWidth {
-            updateReading(forward: range.near, behind: range.far, frameWidth: width)
+            let content = await engine.depthContent
+            updateReading(
+                forward: range.near, behind: range.far,
+                frameWidth: width, content: content
+            )
         }
         restartWiggle()
     }
 
-    private func updateReading(forward: Float, behind: Float, frameWidth: Int) {
+    private func updateReading(
+        forward: Float, behind: Float, frameWidth: Int, content: DepthContent
+    ) {
         if hasSmoothingHistory {
             smoothedLoadForward += (forward - smoothedLoadForward) * smoothingAlpha
             smoothedLoadBehind += (behind - smoothedLoadBehind) * smoothingAlpha
@@ -159,7 +174,8 @@ final class PreviewController {
         reading = DepthReading(
             forward: smoothedLoadForward,
             behind: smoothedLoadBehind,
-            frameWidth: frameWidth
+            frameWidth: frameWidth,
+            content: content
         )
     }
 

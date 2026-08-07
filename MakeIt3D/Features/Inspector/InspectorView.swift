@@ -25,6 +25,7 @@ struct InspectorView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Tokens.Space.l) {
+                    autoSection
                     strengthSection
                     balanceSection
                     advancedSection
@@ -52,6 +53,67 @@ struct InspectorView: View {
         }
         .frame(width: Tokens.Layout.inspectorWidth)
         .surfaceMaterial(.panel)
+    }
+
+    // MARK: Auto
+
+    /// The button that means nobody has to understand any of the controls
+    /// underneath it.
+    ///
+    /// It sits above them rather than below, because the intended order is
+    /// press Auto, then adjust if you disagree, not fiddle with dials and
+    /// discover afterwards that the app could have done it.
+    private var autoSection: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
+            if let progress = conversion.planningProgress {
+                HStack(spacing: Tokens.Space.s) {
+                    ProgressView(value: progress)
+                        .tint(Tokens.Palette.accent)
+                    Text("\(Int(progress * 100))%")
+                        .font(Tokens.Font.monoCaption)
+                        .foregroundStyle(Tokens.Palette.textSecondary)
+                        .contentTransition(.numericText())
+                }
+                Text("Looking at every shot in the film.")
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+            } else {
+                Button {
+                    model.autoTune(conversion)
+                } label: {
+                    HStack(spacing: Tokens.Space.xs) {
+                        Image(systemName: "wand.and.stars")
+                        Text(conversion.shotPlan == nil ? "Set the depth for me" : "Tune it again")
+                    }
+                    .font(Tokens.Font.bodyMedium)
+                    .frame(maxWidth: .infinity)
+                    .foregroundStyle(Tokens.Palette.accent)
+                    .padding(.vertical, Tokens.Space.xs)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pressable()
+                .overlay(
+                    RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
+                        .strokeBorder(Tokens.Palette.accent.opacity(0.4),
+                                      lineWidth: Tokens.Layout.hairlineWidth)
+                )
+                .disabled(conversion.probe == nil)
+                .help("Finds every cut and works out the best depth for each shot on its own.")
+
+                if let plan = conversion.shotPlan {
+                    Text(plan.summary)
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("One setting for a whole film is one exposure for a whole film. This gives every shot its own.")
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Palette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
     }
 
     // MARK: Actions

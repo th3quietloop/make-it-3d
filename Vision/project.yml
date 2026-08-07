@@ -1,0 +1,71 @@
+name: MakeIt3DVision
+
+options:
+  bundleIdPrefix: com.russellwhite.makeit3d
+  createIntermediateGroups: true
+  deploymentTarget:
+    visionOS: "26.0"
+    macOS: "15.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+
+  # The headset app. Everything a person touches lives here.
+  MakeIt3DVision:
+    type: application
+    platform: visionOS
+    sources:
+      - path: Sources/Format
+      - path: Sources/Engine
+      - path: Sources/Checks
+      - path: Sources/App
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGNING_ALLOWED: "NO"
+        PRODUCT_BUNDLE_IDENTIFIER: com.russellwhite.makeit3d.vision
+        INFOPLIST_KEY_CFBundleDisplayName: Make It 3D
+        ENABLE_PREVIEWS: "YES"
+    preBuildScripts:
+      # The stereo sign convention is measured, not assumed, and a flip fails
+      # the build rather than shipping a film that reads inside out.
+      - script: "\"$PROJECT_DIR/Scripts/depth_sign_gate.sh\""
+        name: Depth sign convention gate
+        basedOnDependencyAnalysis: false
+    info:
+      path: Sources/App/Info.plist
+      properties:
+        CFBundleName: Make It 3D
+        CFBundleDisplayName: Make It 3D
+        NSHumanReadableCopyright: "Make It 3D. A personal tool."
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+
+  # The Mac side of the workbench: writes fixtures and runs the gates. It shares
+  # every line of format and engine code with the app, which is the point. A
+  # gate that runs against a copy of the code is a gate that proves nothing.
+  DepthTrackTool:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/Format
+      - path: Sources/Engine
+        excludes:
+          # Compiled from source at runtime by the tool, because a command line
+          # tool has no bundle to hold a default.metallib.
+          - "*.metal"
+      - path: Sources/Checks
+      - path: Tools/Gate
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "-"
+        PRODUCT_BUNDLE_IDENTIFIER: com.russellwhite.makeit3d.depthtracktool

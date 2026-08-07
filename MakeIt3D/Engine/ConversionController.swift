@@ -16,6 +16,21 @@ struct ConversionRequest: Sendable {
     let probe: SourceProbe
     let tuning: EngineTuning
     let outputURL: URL
+    /// Per shot settings, when Auto has run. nil means one setting for the
+    /// whole file, which is what this app did before and is still what happens
+    /// if you never press Auto.
+    var shotPlan: ShotPlan?
+
+    /// The tuning in force at a given moment.
+    ///
+    /// Without a plan this is the same value for every frame. With one, the
+    /// strength and balance change at each cut, which is the entire point: a
+    /// face two feet from the lens and a valley two miles away do not want the
+    /// same depth, and a film cuts between them every few seconds.
+    func tuning(at time: CMTime) -> EngineTuning {
+        guard let shot = shotPlan?.shot(at: time) else { return tuning }
+        return AutoTune.apply(shot.settings, to: tuning)
+    }
 }
 
 /// Runs one conversion end to end.
@@ -103,10 +118,14 @@ enum ConversionController {
 
         /// Turns one frame plus its depth into a written stereo pair.
         func emit(frame: Ingest.Frame, nearness: NearnessMap) throws {
+            // The settings are read per frame rather than once at the top,
+            // because with a shot plan they change at every cut. Without a plan
+            // this returns the same value every time and costs a dictionary
+            // free comparison.
             let field = Disparity.field(
                 from: nearness,
                 frameWidth: request.probe.width,
-                tuning: request.tuning
+                tuning: request.tuning(at: frame.time)
             )
             let left = try pool.next()
             let right = try pool.next()

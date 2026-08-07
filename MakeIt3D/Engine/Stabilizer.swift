@@ -20,6 +20,11 @@ final class Stabilizer {
     private(set) var lastFrameWasSceneCut = false
     private(set) var sceneCutCount = 0
 
+    /// What the raw model output looked like for the most recent frame, before
+    /// normalization flattened every shot into the same 0...1 range. Read by
+    /// the gauge and by the auto tuner, both of which are worthless without it.
+    private(set) var lastContent: DepthContent = .unknown
+
     init(tuning: EngineTuning) {
         self.tuning = tuning
     }
@@ -73,11 +78,15 @@ final class Stabilizer {
     // MARK: Normalization
 
     /// Clamps to the configured percentiles, then scales to 0...1.
+    ///
+    /// The raw statistics are captured on the way through, because this is the
+    /// only place they exist. Everything downstream sees a full range frame.
     private func normalized(_ input: [Float]) -> [Float] {
         guard !input.isEmpty else { return input }
 
         let (low, high) = percentiles(input)
         let range = high - low
+        lastContent = measure(input, low: low, high: high)
 
         guard range > 1e-6 else {
             // A flat frame. Everything sits on the screen plane rather than
@@ -96,6 +105,54 @@ final class Stabilizer {
         vDSP_vclip(output, 1, &minimum, &maximum, &output, 1, vDSP_Length(output.count))
 
         return output
+    }
+
+    /// The raw distribution, described.
+    ///
+    /// Median by histogram for the same reason the percentiles are: this runs
+    /// on every frame of every conversion and a sort of two million floats is
+    /// not free.
+    private func measure(_ input: [Float], low: Float, high: Float) -> DepthContent {
+        var minimum: Float = 0
+        var maximum: Float = 0
+        vDSP_minv(input, 1, &minimum, vDSP_Length(input.count))
+        vDSP_maxv(input, 1, &maximum, vDSP_Length(input.count))
+        guard maximum > minimum else {
+            return DepthContent(low: low, high: high, median: minimum, nearMass: 0)
+        }
+
+        let binCount = 1024
+        var histogram = [Int](repeating: 0, count: binCount)
+        let scale = Float(binCount - 1) / (maximum - minimum)
+        for value in input {
+            histogram[min(max(Int((value - minimum) * scale), 0), binCount - 1)] += 1
+        }
+
+        let half = input.count / 2
+        // Everything above the midpoint of the clamped range counts as near.
+        let midpoint = (low + high) / 2
+        let midBin = min(max(Int((midpoint - minimum) * scale), 0), binCount - 1)
+
+        var running = 0
+        var medianBin = 0
+        var foundMedian = false
+        var nearCount = 0
+        for bin in 0..<binCount {
+            running += histogram[bin]
+            if !foundMedian, running >= half {
+                medianBin = bin
+                foundMedian = true
+            }
+            if bin > midBin { nearCount += histogram[bin] }
+        }
+
+        let binWidth = (maximum - minimum) / Float(binCount - 1)
+        return DepthContent(
+            low: low,
+            high: high,
+            median: minimum + Float(medianBin) * binWidth,
+            nearMass: Double(nearCount) / Double(input.count)
+        )
     }
 
     /// Percentiles by histogram rather than a full sort. At 1080p that is the

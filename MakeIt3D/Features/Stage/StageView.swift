@@ -50,8 +50,24 @@ struct StageView: View {
             .animation(Tokens.Motion.previewCrossfadeAnimation, value: isTargeted)
 
             scrubber
+
+            // The map of the film, under the thing that moves through it.
+            if let plan = model.selection?.shotPlan, !plan.isEmpty,
+               let duration = model.selection?.probe?.duration.seconds {
+                ShotStrip(
+                    plan: plan,
+                    duration: duration,
+                    playhead: model.playhead
+                ) { seconds in
+                    model.scrub(to: seconds)
+                }
+                .padding(.horizontal, Tokens.Space.l)
+                .padding(.bottom, Tokens.Space.m)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .background(Tokens.Palette.stage)
+        .animation(Tokens.Motion.panelSpring, value: model.selection?.shotPlan)
     }
 
     private var stageDescription: String {
