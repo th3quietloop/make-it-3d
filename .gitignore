@@ -13,3 +13,4 @@ Tools/modelconv/*.mlpackage
 Tools/modelconv/debug_node.py
 Tools/modelconv/da3/
 Tools/modelconv/*.log
+.build/

@@ -4,7 +4,7 @@ DA3 is a multi view geometry model. Its own forward runs a camera encoder, a
 camera decoder, a reference view selector, an optional Gaussian splatting
 branch, and a sky pass that uses torch.quantile, randint, and boolean masks with
 data dependent shapes. None of that traces, and none of it is wanted here:
-Relief feeds one frame and wants one depth map.
+Make It 3D feeds one frame and wants one depth map.
 
 So this calls the pieces directly. Backbone with no camera token, then the depth
 head, and nothing else. Same approach as the Video Depth Anything conversion.

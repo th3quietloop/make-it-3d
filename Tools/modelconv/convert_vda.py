@@ -1,6 +1,6 @@
 """Convert Video Depth Anything Small to Core ML.
 
-Relief estimates depth one frame at a time and then smooths the results with a
+Make It 3D estimates depth one frame at a time and then smooths the results with a
 running average. That smoothing is a patch. Video Depth Anything handles time
 inside the model, which is the actual fix for depth that pumps across a shot.
 

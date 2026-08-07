@@ -1,14 +1,14 @@
-# Relief
+# Make It 3D
 
 A macOS app that converts 2D video into Apple spatial video (MV-HEVC) for the Vision Pro.
 
-Named for relief sculpture: depth raised from a flat surface. That is the whole product.
+Named for what it does. You point it at a flat movie and it makes it 3D.
 
 Drop a flat movie in, judge its depth in four preview modes, tune it, and export a `.mov`
 that visionOS Photos, Files, and AVPlayer treat as native spatial video, with the original
 audio passed through untouched.
 
-The wedge is the judgment loop, not the conversion. Every converter converts. Relief lets
+The wedge is the judgment loop, not the conversion. Every converter converts. Make It 3D lets
 you see the depth before you commit: a depth map view, a half colour anaglyph, and a wiggle
 preview that makes bad depth obvious in two seconds without glasses. Convert is the last
 step, not the first.
@@ -27,15 +27,15 @@ xcodegen generate
 ```
 
 ```bash
-xcodebuild -project Relief.xcodeproj -scheme Relief -configuration Debug -derivedDataPath ./build build
+xcodebuild -project Make It 3D.xcodeproj -scheme Make It 3D -configuration Debug -derivedDataPath ./build build
 ```
 
 ```bash
-open ./build/Build/Products/Debug/Relief.app
+open ./build/Build/Products/Debug/Make It 3D.app
 ```
 
 Launch it with `open`, not by running the binary directly. Running
-`Relief.app/Contents/MacOS/Relief` from a shell starts the process and installs
+`Make It 3D.app/Contents/MacOS/Make It 3D` from a shell starts the process and installs
 its menu bar, but the window never appears, because the app is not registered
 with the window server that way. The headless modes below are the exception:
 they never open a window, so running the binary directly is exactly right for
@@ -45,7 +45,7 @@ Any movie paths passed after the app are added to the queue at launch, which
 saves a trip through the open panel when you are testing one file repeatedly:
 
 ```bash
-open ./build/Build/Products/Debug/Relief.app --args ~/Movies/clip.mov
+open ./build/Build/Products/Debug/Make It 3D.app --args ~/Movies/clip.mov
 ```
 
 ## The app icon
@@ -55,7 +55,7 @@ two rounded frames, one vermilion and one cyan, offset horizontally and screen
 blended so the overlap resolves to near white, on the stage colour.
 
 ```bash
-./build/Build/Products/Debug/Relief.app/Contents/MacOS/Relief --makeicon Relief/Resources/Assets.xcassets
+./build/Build/Products/Debug/Make It 3D.app/Contents/MacOS/Make It 3D --makeicon MakeIt3D/Resources/Assets.xcassets
 ```
 
 That writes every size the asset catalog needs, drawn natively at each size
@@ -64,17 +64,17 @@ rather than downscaled from 1024 so the stroke stays crisp at 16pt, and packs an
 
 ## Verifying an export
 
-Relief ships its own gate. Run the app headless and it converts a synthetic clip it
+Make It 3D ships its own gate. Run the app headless and it converts a synthetic clip it
 generates itself, checks the stereo sign convention, and prints a verification report:
 
 ```bash
-./build/Build/Products/Debug/Relief.app/Contents/MacOS/Relief --selftest
+./build/Build/Products/Debug/Make It 3D.app/Contents/MacOS/Make It 3D --selftest
 ```
 
 Pass file paths after the flag to push real clips through the same path:
 
 ```bash
-./build/Build/Products/Debug/Relief.app/Contents/MacOS/Relief --selftest ~/Movies/clip.mov
+./build/Build/Products/Debug/Make It 3D.app/Contents/MacOS/Make It 3D --selftest ~/Movies/clip.mov
 ```
 
 The report checks four things, and they are the things that actually decide whether a file
@@ -93,7 +93,7 @@ MV-HEVC writer with no model and no warp in the loop. It is the fastest way to t
 a stalled export is the writer or something upstream of it:
 
 ```bash
-./build/Build/Products/Debug/Relief.app/Contents/MacOS/Relief --selftest --writerprobe
+./build/Build/Products/Debug/Make It 3D.app/Contents/MacOS/Make It 3D --selftest --writerprobe
 ```
 
 ### Measured throughput
@@ -120,7 +120,7 @@ and it is the one step a person has to do.
 
 ## The golden set
 
-Five clips live in `~/Movies/ReliefGoldenSet`, plus the synthetic clip the app generates:
+Five clips live in `~/Movies/MakeIt3DGoldenSet`, plus the synthetic clip the app generates:
 
 1. Dialogue: two people, static camera, shallow scene
 2. Landscape: wide shot, sky, distant layers
@@ -158,11 +158,11 @@ that the controls here are decorative.
 A feature length conversion runs for an hour, and the whole premise is that you
 walk away. So:
 
-- Toasts report every event: a file added, a duplicate skipped, a file Relief
+- Toasts report every event: a file added, a duplicate skipped, a file Make It 3D
   cannot read, a conversion finished, a conversion failed. Successes retire
   themselves after a few seconds; failures stay until dismissed, because a
   message you missed is a message that failed.
-- System notifications fire on finish and failure, but only when Relief is not
+- System notifications fire on finish and failure, but only when Make It 3D is not
   the frontmost app. Permission is asked for at the first conversion, not at
   launch.
 - The Dock icon carries a progress bar, so the Dock answers "is it still going"
@@ -183,7 +183,7 @@ Ingest -> DepthEstimator -> Stabilizer -> Disparity -> WarpRenderer -> SpatialWr
   the backpressure: the reader only decodes as fast as the model consumes, so memory stays
   flat on a feature length file.
 - **DepthEstimator** runs Depth Anything V2 Small on the Neural Engine. The model declares
-  its own input geometry (518x392 for this package) and Relief reads that at runtime rather
+  its own input geometry (518x392 for this package) and Make It 3D reads that at runtime rather
   than hardcoding it. Output is inverse depth, treated as nearness: higher means closer.
 - **Stabilizer** normalizes each frame against its own 2nd and 98th percentiles, smooths
   across frames with an exponential moving average, and resets on scene cuts rather than
@@ -216,7 +216,7 @@ fails the gate if it ever changes.
 **The writer goes through the double underscore CoreMedia symbols.** `CMTaggedBufferGroup`
 and its create function are marked `CF_REFINED_FOR_SWIFT`, which hides the plain names from
 Swift, and the refined replacement that can reach an asset writer input
-(`AVAssetWriter.inputTaggedPixelBufferGroupReceiver`) is macOS 26 and later. Relief targets
+(`AVAssetWriter.inputTaggedPixelBufferGroupReceiver`) is macOS 26 and later. Make It 3D targets
 macOS 15, so the unrefined C entry points are the supported way there. Building the group as
 a `CMSampleBuffer` instead does not work: the writer input rejects it, because a tagged
 buffer group sample buffer does not carry the `vide` media type the input requires.
@@ -235,7 +235,7 @@ a blit rather than a render. Symmetric is still available under More controls.
 
 Shifting a frame sideways uncovers areas that eye never saw. The mesh used to
 stretch a neighbouring pixel across those gaps, which is why the export cropped
-in 2.5% to hide the smear. Relief now keeps a **background plate**: as
+in 2.5% to hide the smear. Make It 3D now keeps a **background plate**: as
 foreground moves across a shot, whatever is behind it gets remembered, and the
 gaps are filled from that instead. The warp measures its own horizontal stretch
 per triangle and discards anything past the limit, so the plate shows through
@@ -249,9 +249,9 @@ of `--selftest`.
 
 ## Depth models
 
-Relief ships **Depth Anything V2 Small** (Apache-2.0), which reads one frame at
+Make It 3D ships **Depth Anything V2 Small** (Apache-2.0), which reads one frame at
 a time. Per frame models have no memory, so their output wobbles slightly even
-when the picture barely moves, and Relief smooths that with an exponential
+when the picture barely moves, and Make It 3D smooths that with an exponential
 moving average. That trades flicker for lag and fixes neither properly.
 
 **Video Depth Anything Small** (also Apache-2.0) is the actual fix: it reads a
@@ -305,7 +305,7 @@ window would help linearly and nowhere near enough: the gap is three orders of
 magnitude, not one.
 
 So the per frame model stays the default, the video model is labelled
-**Steady (slow)** and marked experimental, and Relief refuses to start a run
+**Steady (slow)** and marked experimental, and Make It 3D refuses to start a run
 that would take more than a few minutes without saying how long it would be and
 offering to switch back. Making it practical means restructuring the conversion
 around 4D operations so the ANE will take it, which is a real project rather
@@ -313,10 +313,10 @@ than a tweak.
 
 ## The sandbox decision
 
-Relief is ad hoc signed, unsandboxed, and has no entitlements. This is a personal tool run
+Make It 3D is ad hoc signed, unsandboxed, and has no entitlements. This is a personal tool run
 locally, not a distribution build. Skipping the sandbox removes security scoped bookmarks and
 a whole class of file access friction: the app can read any movie the user drops on it and
-write next to it without ceremony. If Relief were ever distributed, the sandbox and its
+write next to it without ceremony. If Make It 3D were ever distributed, the sandbox and its
 bookmark handling would have to come back.
 
 ## Non-goals
