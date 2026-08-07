@@ -144,8 +144,10 @@ struct ConvertButton: View {
             Tokens.Motion.shakeOffset, -Tokens.Motion.shakeOffset, 0
         ]
         for (index, offset) in offsets.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(index) * 0.05) {
-                withAnimation(.easeOut(duration: 0.05)) { shakeOffset = offset }
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + Double(index) * Tokens.Motion.shakeStep
+            ) {
+                withAnimation(.easeOut(duration: Tokens.Motion.shakeStep)) { shakeOffset = offset }
             }
         }
     }
@@ -175,8 +177,8 @@ struct Chip: View {
 
     private var background: Color {
         switch tone {
-        case .accent: return Tokens.Palette.accent.opacity(0.12)
-        case .error: return Tokens.Palette.error.opacity(0.12)
+        case .accent: return Tokens.Palette.chipFillAccent
+        case .error: return Tokens.Palette.chipFillError
         case .quiet: return Tokens.Palette.panelRaised
         }
     }
@@ -198,7 +200,7 @@ struct Readout: View {
 
     var body: some View {
         Text(value)
-            .font(.system(size: size, design: .monospaced).monospacedDigit())
+            .font(Tokens.Font.mono(size: size))
             .foregroundStyle(Tokens.Palette.textPrimary)
     }
 }

@@ -98,6 +98,21 @@ final class AppModel {
         conversions.contains { $0.status.isConverting }
     }
 
+    /// The row actually being converted right now, which is not necessarily the
+    /// selected one. The Convert button reports this rather than the selection,
+    /// otherwise selecting a finished row while the queue runs shows a progress
+    /// sweep stuck at zero.
+    var activeConversion: Conversion? {
+        conversions.first { $0.status.isConverting }
+    }
+
+    /// Progress across everything in this run, so the button means the same
+    /// thing whether one file is converting or five.
+    var queueProgress: Double {
+        guard case .converting(let fraction, _)? = activeConversion?.status else { return 0 }
+        return fraction
+    }
+
     static let supportedTypes: [UTType] = [.movie, .quickTimeMovie, .mpeg4Movie, .video]
 
     init() {

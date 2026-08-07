@@ -67,7 +67,7 @@ struct RootView: View {
         }
         .padding(.horizontal, Tokens.Space.m)
         .padding(.vertical, Tokens.Space.xs)
-        .background(Tokens.Palette.error.opacity(0.10))
+        .background(Tokens.Palette.bannerFill)
     }
 
     // MARK: Toolbar

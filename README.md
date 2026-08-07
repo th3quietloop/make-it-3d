@@ -34,6 +34,34 @@ xcodebuild -project Relief.xcodeproj -scheme Relief -configuration Debug -derive
 open ./build/Build/Products/Debug/Relief.app
 ```
 
+Launch it with `open`, not by running the binary directly. Running
+`Relief.app/Contents/MacOS/Relief` from a shell starts the process and installs
+its menu bar, but the window never appears, because the app is not registered
+with the window server that way. The headless modes below are the exception:
+they never open a window, so running the binary directly is exactly right for
+them.
+
+Any movie paths passed after the app are added to the queue at launch, which
+saves a trip through the open panel when you are testing one file repeatedly:
+
+```bash
+open ./build/Build/Products/Debug/Relief.app --args ~/Movies/clip.mov
+```
+
+## The app icon
+
+The icon is generated, not drawn by hand. It is the stereo fuse at icon scale:
+two rounded frames, one vermilion and one cyan, offset horizontally and screen
+blended so the overlap resolves to near white, on the stage colour.
+
+```bash
+./build/Build/Products/Debug/Relief.app/Contents/MacOS/Relief --makeicon Relief/Resources/Assets.xcassets
+```
+
+That writes every size the asset catalog needs, drawn natively at each size
+rather than downscaled from 1024 so the stroke stays crisp at 16pt, and packs an
+`.icns` alongside it with `iconutil`.
+
 ## Verifying an export
 
 Relief ships its own gate. Run the app headless and it converts a synthetic clip it
@@ -67,6 +95,22 @@ a stalled export is the writer or something upstream of it:
 ```bash
 ./build/Build/Products/Debug/Relief.app/Contents/MacOS/Relief --selftest --writerprobe
 ```
+
+### Measured throughput
+
+On an M-series Mac, Release build:
+
+| Source | Throughput |
+| ------ | ---------- |
+| 1280x720 | 32.9 fps |
+| 1920x1080 | 30.0 fps |
+
+The PRD guardrail is 15 fps at 1080p, so there is roughly double the headroom.
+Resolution costs less than it looks like it should, because the depth model runs
+at its own fixed 518x392 no matter what the source is. Only the warp and the
+encode scale with pixel count.
+
+Debug builds run about a third of this. Measure in Release.
 
 ### The final human check
 

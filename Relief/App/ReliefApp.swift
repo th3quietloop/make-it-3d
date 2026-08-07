@@ -15,6 +15,10 @@ struct ReliefApp: App {
         // main thread on a semaphore here would deadlock the very APIs the test
         // is exercising. Instead the work goes to a detached task and exit()
         // ends the process when it finishes.
+        if CommandLine.arguments.contains("--makeicon") {
+            exit(IconRenderer.runFromCommandLine() ? 0 : 1)
+        }
+
         if SelfTest.shouldRun() {
             let writerProbeOnly = CommandLine.arguments.contains("--writerprobe")
             Task.detached {

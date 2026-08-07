@@ -59,9 +59,7 @@ struct InspectorView: View {
 
     private var convertState: ConvertButton.State {
         if model.isConverting {
-            let fraction: Double
-            if case .converting(let value, _) = conversion.status { fraction = value } else { fraction = 0 }
-            return .loading(fraction: fraction)
+            return .loading(fraction: model.queueProgress)
         }
         if case .failed(let message) = conversion.status { return .error(message) }
         if model.modelBanner != nil { return .disabled }
@@ -109,7 +107,7 @@ struct InspectorView: View {
                 GeometryReader { geometry in
                     Rectangle()
                         .fill(Tokens.Palette.textTertiary)
-                        .frame(width: 1, height: 6)
+                        .frame(width: Tokens.Layout.hairlineWidth, height: Tokens.Layout.tickHeight)
                         .offset(x: geometry.size.width * 0.45, y: -2)
                 }
                 .allowsHitTesting(false)
@@ -125,7 +123,7 @@ struct InspectorView: View {
         VStack(alignment: .leading, spacing: Tokens.Space.xs) {
             SectionLabel(text: "This frame")
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
                     Text("In front")
                         .font(Tokens.Font.caption)
                         .foregroundStyle(Tokens.Palette.textTertiary)
@@ -135,7 +133,7 @@ struct InspectorView: View {
                     )
                 }
                 Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
+                VStack(alignment: .trailing, spacing: Tokens.Space.xxs) {
                     Text("Behind")
                         .font(Tokens.Font.caption)
                         .foregroundStyle(Tokens.Palette.textTertiary)
@@ -225,7 +223,7 @@ struct InspectorView: View {
                     .tint(Tokens.Palette.accent)
                     Readout(value: String(format: "%.2f%%", percent))
                         .font(Tokens.Font.monoCaption)
-                        .frame(width: 56, alignment: .trailing)
+                        .frame(width: Tokens.Layout.percentColumn, alignment: .trailing)
                 }
             }
         }
@@ -283,6 +281,6 @@ struct StrengthChip: View {
                 ? Tokens.Palette.accent.shiftedLightness(by: Tokens.StateShift.hover)
                 : Tokens.Palette.accent
         }
-        return isHovering ? Tokens.Palette.panelRaised : Tokens.Palette.panelRaised.opacity(0.5)
+        return isHovering ? Tokens.Palette.panelRaised : Tokens.Palette.controlFillQuiet
     }
 }

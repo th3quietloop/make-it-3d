@@ -63,7 +63,7 @@ struct QueueRow: View {
 
             thumbnail
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
                 title
                 subtitle
             }
@@ -166,15 +166,15 @@ struct QueueRow: View {
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.panel))
                     // The thumbnail dims while its row converts.
-                    .opacity(conversion.status.isConverting ? 0.4 : 1)
+                    .opacity(conversion.status.isConverting ? Tokens.StateShift.dimmed : 1)
             }
 
             if case .converting(let fraction, _) = conversion.status {
                 Circle()
                     .trim(from: 0, to: fraction)
-                    .stroke(Tokens.Palette.accent, lineWidth: 2)
+                    .stroke(Tokens.Palette.accent, lineWidth: Tokens.Layout.progressRingWidth)
                     .rotationEffect(.degrees(-90))
-                    .frame(width: 22, height: 22)
+                    .frame(width: Tokens.Layout.progressRing, height: Tokens.Layout.progressRing)
             }
         }
         .frame(width: Tokens.Layout.thumbnailSize, height: Tokens.Layout.thumbnailSize)

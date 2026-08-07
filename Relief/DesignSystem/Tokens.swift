@@ -38,6 +38,15 @@ enum Tokens {
         /// Focus ring: 2pt accent at 40%.
         static let focusRing = accent.opacity(0.40)
 
+        /// Chip fills, at the same 12% as the selection tint.
+        static let chipFillAccent = accent.opacity(0.12)
+        static let chipFillError = error.opacity(0.12)
+        /// The model missing banner across the top of the stage.
+        static let bannerFill = error.opacity(0.10)
+        /// An unselected preset chip: present, but not competing with the
+        /// selected one.
+        static let controlFillQuiet = panelRaised.opacity(0.5)
+
         /// Depth map ramp: monochrome silver. Explicitly not turbo or viridis.
         /// The rainbow ramp is an AI demo tell and it is banned here.
         static let depthNear = Color(hex: 0xE8E9EC)
@@ -99,6 +108,18 @@ enum Tokens {
         static let selectionBarWidth: CGFloat = 2
         static let focusRingWidth: CGFloat = 2
         static let hairlineWidth: CGFloat = 1
+
+        /// The progress ring over a converting row's thumbnail.
+        static let progressRing: CGFloat = 24
+        static let progressRingWidth: CGFloat = 2
+        /// The tick marking the screen plane on the convergence slider.
+        static let tickHeight: CGFloat = 8
+        /// Fixed columns, so numbers do not jitter as their digits change.
+        static let timecodeColumn: CGFloat = 72
+        static let durationColumn: CGFloat = 56
+        static let percentColumn: CGFloat = 56
+        /// The preview mode control, centred over the stage.
+        static let previewPickerWidth: CGFloat = 320
     }
 
     // MARK: Type
@@ -136,6 +157,13 @@ enum Tokens {
         /// 20pt numeric readouts in the inspector.
         static let monoReadout = SwiftUI.Font.system(size: TypeScale.readout, design: .monospaced)
             .monospacedDigit()
+
+        /// SF Mono at any size from the scale, for the shared Readout view.
+        /// The size still has to come from TypeScale; this only saves every
+        /// caller from spelling out the font construction.
+        static func mono(size: CGFloat) -> SwiftUI.Font {
+            SwiftUI.Font.system(size: size, design: .monospaced).monospacedDigit()
+        }
     }
 
     enum Tracking {
@@ -176,6 +204,8 @@ enum Tokens {
         /// The 2px split of the stereo fuse, and the error shake distance.
         static let fuseOffset: CGFloat = 2
         static let shakeOffset: CGFloat = 2
+        /// One leg of the error shake. Four legs, then rest.
+        static let shakeStep: Double = 0.05
 
         static var previewCrossfadeAnimation: Animation {
             .easeOut(duration: previewCrossfade)
@@ -191,6 +221,8 @@ enum Tokens {
     enum StateShift {
         static let hover: Double = 0.06
         static let active: Double = -0.08
+        /// A converting row's thumbnail dims to this while the ring runs.
+        static let dimmed: Double = 0.4
     }
 }
 

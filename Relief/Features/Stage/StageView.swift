@@ -87,7 +87,7 @@ struct StageView: View {
             ))
             .font(Tokens.Font.monoCaption)
             .foregroundStyle(Tokens.Palette.textSecondary)
-            .frame(width: 72, alignment: .leading)
+            .frame(width: Tokens.Layout.timecodeColumn, alignment: .leading)
 
             Slider(
                 value: Binding(
@@ -103,7 +103,7 @@ struct StageView: View {
             Text(conversion.probe?.displayDuration ?? "0:00")
                 .font(Tokens.Font.monoCaption)
                 .foregroundStyle(Tokens.Palette.textTertiary)
-                .frame(width: 56, alignment: .trailing)
+                .frame(width: Tokens.Layout.durationColumn, alignment: .trailing)
         }
         .padding(.horizontal, Tokens.Space.m)
         .padding(.vertical, Tokens.Space.s)
@@ -132,6 +132,6 @@ struct PreviewModePicker: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: 320)
+        .frame(width: Tokens.Layout.previewPickerWidth)
     }
 }
