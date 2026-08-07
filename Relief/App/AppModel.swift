@@ -86,7 +86,37 @@ final class Conversion: Identifiable {
 final class AppModel {
 
     var conversions: [Conversion] = []
+
+    /// The row driving the stage. One row, always, because there is one stage.
     var selectionID: Conversion.ID?
+
+    /// Every row the user has selected. Removing thirteen files one at a time
+    /// is not a workflow, so the queue selects like a Finder list: click,
+    /// shift click for a run, command click to pick and choose.
+    var selectedIDs: Set<Conversion.ID> = []
+
+    /// Where a shift click measures from.
+    private var selectionAnchorID: Conversion.ID?
+
+    /// True while the queue is working through everything that is ready.
+    private(set) var queueRunning = false
+
+    /// Anything added while the queue is running joins the run rather than
+    /// sitting there waiting to be noticed.
+    var keepGoingAutomatically = true
+
+    // MARK: Queue sections
+
+    /// Converted. These are done with the pipeline and waiting to go to the
+    /// headset, so they are not "queue" in any sense the word carries.
+    var finished: [Conversion] { conversions.filter(\.status.isDone) }
+
+    /// Everything still to do, including failures, which belong with the work
+    /// rather than with the results.
+    var upNext: [Conversion] { conversions.filter { !$0.status.isDone } }
+
+    /// Rows the queue would pick up on its own.
+    var readyToConvert: [Conversion] { conversions.filter { $0.status.isReady } }
 
     /// Set only when the depth model could not be loaded, which is a standing
     /// condition rather than an event. Everything that happens once goes
@@ -112,8 +142,16 @@ final class AppModel {
     var inspectorVisible = true
     var sidebarVisible = true
 
+    /// Where exports land.
+    ///
+    /// Downloads, not Movies. Downloads is the folder people already know how
+    /// to find, it is in every Finder sidebar, and it is where a file you are
+    /// about to send somewhere else belongs. Movies is where a library lives,
+    /// and this app does not make libraries, it makes files you hand to a
+    /// headset. The destination is also shown next to Convert, because a
+    /// setting nobody can find is a setting that does not exist.
     var outputFolder: URL = FileManager.default.urls(
-        for: .moviesDirectory, in: .userDomainMask
+        for: .downloadsDirectory, in: .userDomainMask
     ).first ?? FileManager.default.homeDirectoryForCurrentUser
 
     /// Filename pattern for exports. `{name}` is replaced with the source name.
@@ -176,7 +214,7 @@ final class AppModel {
     /// Silently skipping a duplicate or an unreadable file taught the user that
     /// the app eats things. Every rejected intake now gets a sentence.
     func add(urls: [URL]) {
-        var added = 0
+        var added: [Conversion] = []
         var duplicates: [String] = []
         var unsupported: [String] = []
 
@@ -191,16 +229,15 @@ final class AppModel {
             }
             let conversion = Conversion(sourceURL: url)
             conversions.append(conversion)
-            if selectionID == nil { selectionID = conversion.id }
             probe(conversion)
-            added += 1
+            added.append(conversion)
         }
 
         if !duplicates.isEmpty {
             toasts.info(
                 duplicates.count == 1
-                    ? "\(duplicates[0]) is already in the queue"
-                    : "\(duplicates.count) files were already in the queue"
+                    ? "\(duplicates[0]) is already here"
+                    : "\(duplicates.count) files were already here"
             )
         }
         if !unsupported.isEmpty {
@@ -208,11 +245,79 @@ final class AppModel {
                 unsupported.count == 1
                     ? "Couldn't add \(unsupported[0])"
                     : "Couldn't add \(unsupported.count) files",
-                detail: "Relief speaks H.264, HEVC, and ProRes."
+                detail: "Relief reads H.264, HEVC, and ProRes."
             )
         }
-        if added > 1 {
-            toasts.info("Added \(added) movies")
+
+        guard let first = added.first else { return }
+
+        // Dropping a file used to do two things silently: it set selectionID
+        // directly, which skipped the preview refresh that select() performs,
+        // so the stage stayed empty and the file looked like it had not
+        // arrived. And a single added file got no toast at all, because the
+        // announcement was behind `added > 1`. Both are fixed here: the drop
+        // lands you on the file, and it says so.
+        select(first)
+
+        if added.count == 1 {
+            toasts.success("Added \(first.displayName)", detail: "Look at the depth before you convert.")
+        } else {
+            toasts.success("Added \(added.count) movies", detail: "Showing \(first.displayName).")
+        }
+    }
+
+    /// Picks where exports land. Reachable from the inspector as well as from
+    /// Settings, because the moment someone wants to change it is the moment
+    /// they are looking at the Convert button.
+    func chooseOutputFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = outputFolder
+        panel.prompt = "Save here"
+        panel.message = "Where should converted movies be saved?"
+        if panel.runModal() == .OK, let url = panel.url {
+            outputFolder = url
+            toasts.info("Saving to \(url.lastPathComponent)")
+        }
+    }
+
+    /// Empties the Finished list. The exported files stay on disk: this clears
+    /// the record of them, not the work.
+    func clearFinished() {
+        let ids = Set(finished.map(\.id))
+        guard !ids.isEmpty else { return }
+        conversions.removeAll { ids.contains($0.id) }
+        selectedIDs.subtract(ids)
+        if let current = selectionID, ids.contains(current) {
+            if let next = conversions.first {
+                selectionID = next.id
+                selectedIDs = [next.id]
+                refreshPreview(frameChanged: true)
+            } else {
+                selectionID = nil
+                selectedIDs = []
+                preview.clear()
+            }
+        }
+        toasts.info(
+            ids.count == 1 ? "Cleared 1 finished movie" : "Cleared \(ids.count) finished movies",
+            detail: "The exported files are still in \(outputFolder.lastPathComponent)."
+        )
+    }
+
+    /// The open panel, on the model so every "add movies" affordance opens the
+    /// same one rather than each surface growing its own.
+    func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = Self.supportedTypes
+        panel.prompt = "Add"
+        panel.message = "Pick the movies to convert to spatial video."
+        if panel.runModal() == .OK {
+            add(urls: panel.urls)
         }
     }
 
@@ -224,18 +329,140 @@ final class AppModel {
     }
 
     func remove(_ conversion: Conversion) {
-        guard !conversion.status.isConverting else { return }
-        conversions.removeAll { $0.id == conversion.id }
-        if selectionID == conversion.id {
-            selectionID = conversions.first?.id
-            playhead = 0
-            if selection == nil { preview.clear() } else { refreshPreview(frameChanged: true) }
+        remove(ids: [conversion.id])
+    }
+
+    /// Removes everything selected, in one go.
+    ///
+    /// A converting row is left alone rather than silently skipped without
+    /// explanation, because pulling the file out from under a running pipeline
+    /// is the one removal that can corrupt an export.
+    func removeSelected() {
+        guard !selectedIDs.isEmpty else { return }
+        remove(ids: selectedIDs)
+    }
+
+    private func remove(ids: Set<Conversion.ID>) {
+        let doomed = conversions.filter { ids.contains($0.id) }
+        let running = doomed.filter(\.status.isConverting)
+        let removable = doomed.filter { !$0.status.isConverting }
+        guard !removable.isEmpty else {
+            if !running.isEmpty {
+                toasts.info("That one is converting", detail: "Stop it first, then remove it.")
+            }
+            return
+        }
+
+        let removableIDs = Set(removable.map(\.id))
+        conversions.removeAll { removableIDs.contains($0.id) }
+        selectedIDs.subtract(removableIDs)
+        if let anchor = selectionAnchorID, removableIDs.contains(anchor) {
+            selectionAnchorID = nil
+        }
+
+        if let current = selectionID, removableIDs.contains(current) {
+            if let next = conversions.first {
+                selectionID = next.id
+                selectedIDs = [next.id]
+                playhead = 0
+                refreshPreview(frameChanged: true)
+            } else {
+                selectionID = nil
+                selectedIDs = []
+                playhead = 0
+                preview.clear()
+            }
+        }
+
+        if removable.count == 1 {
+            toasts.info("Removed \(removable[0].displayName)")
+        } else {
+            toasts.info("Removed \(removable.count) movies")
+        }
+        if !running.isEmpty {
+            toasts.info("Kept the one that is converting", detail: "Stop it first if you want it gone.")
         }
     }
 
-    func removeSelected() {
-        guard let selection else { return }
-        remove(selection)
+    // MARK: Selection
+
+    /// Shift click: everything between the anchor and here.
+    func extendSelection(to conversion: Conversion) {
+        guard let anchor = selectionAnchorID ?? selectionID,
+              let start = conversions.firstIndex(where: { $0.id == anchor }),
+              let end = conversions.firstIndex(where: { $0.id == conversion.id })
+        else {
+            select(conversion)
+            return
+        }
+        let range = start <= end ? start...end : end...start
+        selectedIDs = Set(conversions[range].map(\.id))
+        focus(conversion)
+    }
+
+    /// Command click: add or drop one row without disturbing the rest.
+    func toggleSelection(_ conversion: Conversion) {
+        if selectedIDs.contains(conversion.id), selectedIDs.count > 1 {
+            selectedIDs.remove(conversion.id)
+            if selectionID == conversion.id,
+               let next = conversions.first(where: { selectedIDs.contains($0.id) }) {
+                focus(next)
+            }
+        } else {
+            selectedIDs.insert(conversion.id)
+            selectionAnchorID = conversion.id
+            focus(conversion)
+        }
+    }
+
+    func selectAll() {
+        guard !conversions.isEmpty else { return }
+        selectedIDs = Set(conversions.map(\.id))
+        if selectionID == nil, let first = conversions.first { focus(first) }
+    }
+
+    /// Moves the stage to a row without changing what is selected.
+    private func focus(_ conversion: Conversion) {
+        guard selectionID != conversion.id else { return }
+        selectionID = conversion.id
+        playhead = 0
+        refreshPreview(frameChanged: true)
+    }
+
+    // MARK: Running the queue
+
+    /// Converts everything that is ready, one after another.
+    ///
+    /// The judgment loop is the point of this app, so the queue does not start
+    /// itself when a file lands. You look at the depth first, then you start
+    /// it. What the queue will not do is make you press Convert thirteen
+    /// times: once running, it works through the list on its own, and anything
+    /// added while it runs joins the end.
+    func startQueue() {
+        guard conversionTask == nil else { return }
+        guard !readyToConvert.isEmpty else { return }
+
+        queueRunning = true
+        let total = readyToConvert.count
+        if total > 1 {
+            toasts.info("Converting \(total) movies", detail: "They run one after another.")
+        }
+
+        conversionTask = Task { [weak self] in
+            while let self, self.queueRunning, let next = self.readyToConvert.first {
+                await self.convert(next)
+                guard !Task.isCancelled else { break }
+                if !self.keepGoingAutomatically { break }
+            }
+            guard let self else { return }
+            self.conversionTask = nil
+            let wasRunning = self.queueRunning
+            self.queueRunning = false
+            if wasRunning, total > 1 {
+                let done = self.finished.count
+                self.toasts.success("Queue finished", detail: "\(done) ready to send to the Vision Pro.")
+            }
+        }
     }
 
     /// Generates the test clip and queues it, so someone with no video to hand
@@ -260,12 +487,11 @@ final class AppModel {
 
     private var isGeneratingSample = false
 
-    /// Selection drives the stage.
+    /// Plain click: this row, and only this row.
     func select(_ conversion: Conversion) {
-        guard selectionID != conversion.id else { return }
-        selectionID = conversion.id
-        playhead = 0
-        refreshPreview(frameChanged: true)
+        selectedIDs = [conversion.id]
+        selectionAnchorID = conversion.id
+        focus(conversion)
     }
 
     // MARK: Preview
@@ -377,31 +603,18 @@ final class AppModel {
 
     // MARK: Conversion
 
-    /// Converts everything that is Ready, one at a time. Sequential on purpose:
+    /// Converts everything that is ready, one at a time. Sequential on purpose:
     /// the model and the GPU are the bottleneck, so running two at once would
     /// make both slower and the progress meaningless.
-    func convertAllReady() {
-        guard conversionTask == nil else { return }
-        let queue = conversions.filter { $0.status.isReady || $0.settingsChangedSinceExport }
-        guard !queue.isEmpty else { return }
+    ///
+    /// This used to snapshot the list up front, so a file dropped in during a
+    /// long run sat there until the whole batch ended and someone noticed. The
+    /// runner now asks for the next ready row each time round, which is what
+    /// makes `keepGoingAutomatically` mean anything.
+    func convertAllReady() { startQueue() }
 
-        conversionTask = Task { [weak self] in
-            for conversion in queue {
-                guard let self, !Task.isCancelled else { break }
-                await self.convert(conversion)
-            }
-            self?.conversionTask = nil
-        }
-    }
-
-    func convertSelected() {
-        guard let selection else { return }
-        guard conversionTask == nil else { return }
-        conversionTask = Task { [weak self] in
-            await self?.convert(selection)
-            self?.conversionTask = nil
-        }
-    }
+    /// The Convert button.
+    func convertSelected() { startQueue() }
 
     /// Runs a finished row again, keeping the existing export. The user decides
     /// when they are done, not the button.
@@ -561,9 +774,21 @@ final class AppModel {
 
     func cancelConversion() {
         guard isConverting else { return }
+        queueRunning = false
         conversionTask?.cancel()
         conversionTask = nil
         DockProgress.shared.fraction = nil
+
+        // Cancelling the Task tears down the event stream, so the `.cancelled`
+        // event that resets the row never arrives. The row stayed at
+        // .converting forever: a progress bar frozen at 1% with a live Cancel
+        // button under it, on a conversion that had already stopped. Reset the
+        // row here rather than hoping for an event from a stream that is gone.
+        for conversion in conversions where conversion.status.isConverting {
+            conversion.status = .ready
+            conversion.startedAt = nil
+        }
+
         toasts.info("Conversion stopped", detail: "The file is back in the queue, settings intact.")
     }
 

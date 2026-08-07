@@ -69,35 +69,70 @@ struct InspectorView: View {
                         .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
                         .pressable()
                         .help("Reveal the converted file in the Finder.")
-                    Button("Convert again") { model.reconvert(conversion) }
+                    // Was "Convert again", which reads as the forward action
+                    // on a screen where the forward action is a different
+                    // movie. It said "again" and the user heard "next". The
+                    // redo now names the file it would redo, and the way to a
+                    // new one is Add more movies at the foot of the queue.
+                    Button("Redo this one") { model.reconvert(conversion) }
                         .buttonStyle(.plain)
                         .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
                         .pressable()
-                        .help("Run it through again and keep both files.")
+                        .disabled(model.isConverting)
+                        .help("Convert \(conversion.displayName) again and keep both files.")
                 }
                 .font(Tokens.Font.body)
                 .frame(minHeight: Tokens.Layout.minTarget)
 
             default:
                 ConvertButton(title: convertTitle, state: convertState) {
-                    model.convertAllReady()
+                    model.convertSelected()
                 }
                 if model.isConverting {
-                    Button("Cancel") { model.cancelConversion() }
+                    Button("Stop") { model.cancelConversion() }
                         .buttonStyle(.plain)
                         .font(Tokens.Font.body)
                         .foregroundStyle(Tokens.Palette.textSecondary)
+                        .pressable()
                         .frame(minHeight: Tokens.Layout.minTarget)
                 } else {
-                    Color.clear.frame(height: Tokens.Layout.minTarget)
+                    destinationNote
                 }
             }
         }
         .frame(height: Tokens.Layout.actionStackHeight, alignment: .top)
     }
 
+    /// Where the file will land, said before it lands rather than hidden in
+    /// settings. This slot was an empty spacer holding the layout still.
+    private var destinationNote: some View {
+        Button {
+            model.chooseOutputFolder()
+        } label: {
+            HStack(spacing: Tokens.Space.xxs) {
+                Image(systemName: "folder")
+                Text("Saves to \(model.outputFolder.lastPathComponent)")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(Tokens.Font.caption)
+            .foregroundStyle(Tokens.Palette.textTertiary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pressable()
+        .help("Change where converted files are saved.")
+        .frame(minHeight: Tokens.Layout.minTarget)
+    }
+
     private var convertTitle: String {
-        conversion.settingsChangedSinceExport ? "Convert again" : "Convert"
+        if model.isConverting, model.readyToConvert.count > 1 {
+            return "Converting \(model.readyToConvert.count) more"
+        }
+        if model.readyToConvert.count > 1 {
+            return "Convert \(model.readyToConvert.count) movies"
+        }
+        return conversion.settingsChangedSinceExport ? "Convert with new settings" : "Convert"
     }
 
     private var convertState: ConvertButton.State {

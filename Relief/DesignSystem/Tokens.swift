@@ -124,8 +124,6 @@ enum Tokens {
         static let minTarget: CGFloat = 28
         /// Anything also reachable while leaning back.
         static let leanBackTarget: CGFloat = 44
-        /// 2pt leading bar that encodes queue row selection.
-        static let selectionBarWidth: CGFloat = 2
         static let focusRingWidth: CGFloat = 2
         static let hairlineWidth: CGFloat = 1
 
@@ -136,6 +134,14 @@ enum Tokens {
         /// Pane headers. One value, so QUEUE and STRENGTH sit on the same
         /// baseline off the toolbar edge rather than a few points apart.
         static let paneHeaderHeight: CGFloat = 40
+
+        /// Sticky headers inside a pane. Shorter than a pane header, because it
+        /// divides content rather than crowning a region.
+        static let sectionHeaderHeight: CGFloat = 28
+
+        /// A glyph-only button. Below minTarget visually, but the hit area is
+        /// the row, so the target stays honest.
+        static let iconButton: CGFloat = 22
 
         /// Toasts, bottom leading over the stage.
         static let toastWidth: CGFloat = 320

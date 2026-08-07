@@ -131,22 +131,50 @@ struct RootView: View {
     // MARK: Import
 
     private func openPanel() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.allowedContentTypes = AppModel.supportedTypes
-        if panel.runModal() == .OK {
-            model.add(urls: panel.urls)
-        }
+        model.chooseFiles()
     }
 
+    /// Collects the whole drop before handing it over.
+    ///
+    /// Each provider resolves on its own callback, so adding them one at a time
+    /// meant dropping five files produced five separate "Added" toasts and five
+    /// separate selection changes, with the stage landing on whichever file
+    /// happened to resolve last. The drop is one gesture and it reports as one.
     private func load(_ providers: [NSItemProvider]) {
+        let collector = DropCollector(expected: providers.count)
         for provider in providers {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                Task { @MainActor in model.add(urls: [url]) }
+                Task { @MainActor in
+                    if let batch = collector.received(url) {
+                        model.add(urls: batch)
+                    }
+                }
             }
         }
+    }
+}
+
+/// Gathers the URLs of one drop, then reports the whole batch once.
+///
+/// NSItemProvider resolves asynchronously and out of order, so the only way to
+/// know a drop is complete is to count the callbacks. Main actor isolated
+/// because that is where every callback hops before touching it.
+@MainActor
+private final class DropCollector {
+    private let expected: Int
+    private var urls: [URL] = []
+    private var seen = 0
+
+    init(expected: Int) {
+        self.expected = expected
+    }
+
+    /// Returns the batch on the last callback, nil before then.
+    func received(_ url: URL?) -> [URL]? {
+        seen += 1
+        if let url { urls.append(url) }
+        guard seen >= expected else { return nil }
+        return urls.isEmpty ? nil : urls
     }
 }
 

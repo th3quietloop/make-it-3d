@@ -86,10 +86,30 @@ final class ReliefAppDelegate: NSObject, NSApplicationDelegate {
 struct ReliefCommands: Commands {
     @Bindable var model: AppModel
 
+    /// Names what Delete will actually take, so a thirteen row selection does
+    /// not hide behind the word "Remove".
+    private var removeTitle: String {
+        model.selectedIDs.count > 1 ? "Remove \(model.selectedIDs.count) Movies" : "Remove Movie"
+    }
+
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("Add to Queue...") { addFiles() }
                 .keyboardShortcut("o", modifiers: .command)
+        }
+
+        // Finder keys for a Finder-shaped list. The queue reads as a list of
+        // files, so the shortcuts people already have in their hands have to
+        // work: select a run, select the lot, delete the selection.
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Button("Select All Movies") { model.selectAll() }
+                .keyboardShortcut("a", modifiers: .command)
+                .disabled(model.conversions.isEmpty)
+
+            Button(removeTitle) { model.removeSelected() }
+                .keyboardShortcut(.delete, modifiers: [])
+                .disabled(model.selectedIDs.isEmpty)
         }
 
         CommandGroup(after: .newItem) {

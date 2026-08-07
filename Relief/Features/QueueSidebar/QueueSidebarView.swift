@@ -1,63 +1,159 @@
 import SwiftUI
 import AppKit
 
-/// The queue. Selection is encoded by a 2pt leading accent bar plus a 12%
-/// accent fill, so it reads as state rather than decoration.
+/// The queue, in two parts: what is finished, and what is still to do.
+///
+/// They used to be one list. A converted file sat in a queue labelled "Queue"
+/// wearing a Done chip, which says the work is still pending and finished at
+/// the same time. Splitting them means the list you scan for "what do I send to
+/// the headset" and the list you scan for "what is left" are different lists.
+///
+/// Finished sits on top on purpose. With the queue running unattended, the
+/// state you come back to is a pile of results, and results are what you came
+/// back for. The row being converted is pinned above both so a long run never
+/// hides its own progress.
 struct QueueSidebarView: View {
     @Bindable var model: AppModel
     let isTargeted: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                SectionLabel(text: "Queue")
-                Spacer()
-                Text("\(model.conversions.count)")
-                    .font(Tokens.Font.monoCaption)
-                    .foregroundStyle(Tokens.Palette.textTertiary)
-            }
-            .padding(.horizontal, Tokens.Space.m)
-            .frame(height: Tokens.Layout.paneHeaderHeight)
+            header
 
             Hairline()
 
             ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(model.conversions) { conversion in
-                        QueueRow(
-                            conversion: conversion,
-                            isSelected: conversion.id == model.selectionID
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    if !model.finished.isEmpty {
+                        Section {
+                            ForEach(model.finished) { row($0) }
+                        } header: {
+                            QueueSectionHeader(
+                                title: "Finished",
+                                count: model.finished.count,
+                                trailing: model.finished.isEmpty ? nil : "Clear"
+                            ) {
+                                model.clearFinished()
+                            }
+                        }
+                    }
+
+                    Section {
+                        ForEach(model.upNext) { row($0) }
+                        addMoreButton
+                    } header: {
+                        QueueSectionHeader(
+                            title: "Up next",
+                            count: model.upNext.count,
+                            trailing: nil,
+                            action: nil
                         )
-                        .onTapGesture { model.select(conversion) }
-                        .contextMenu { rowMenu(conversion) }
                     }
                 }
-
-                // The empty stretch below the rows accepts drops too, so it
-                // says so rather than reading as dead space.
-                Text("Drop more movies here")
-                    .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.textTertiary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, Tokens.Space.l)
+                .padding(.bottom, Tokens.Space.m)
             }
-            // Rows pass under the header rather than stopping at a rule.
             .scrollEdgeFade(top: true, bottom: false)
 
             Spacer(minLength: 0)
         }
         .frame(minWidth: Tokens.Layout.sidebarMinWidth)
         .surfaceMaterial(.sidebar)
-        .overlay(
-            // Drag over wake, in the populated layout as well as the empty one.
-            RoundedRectangle(cornerRadius: Tokens.Radius.panel, style: .continuous)
-                .strokeBorder(
-                    isTargeted ? Tokens.Palette.accent : .clear,
-                    lineWidth: Tokens.Layout.focusRingWidth
-                )
-                .padding(Tokens.Space.xxs)
-        )
+        .overlay(dragWake)
         .animation(Tokens.Motion.previewCrossfadeAnimation, value: isTargeted)
+        // Finder keys, because this looks like a Finder list and anything that
+        // looks like one is expected to behave like one.
+        .onDeleteCommand { model.removeSelected() }
+        // Focusable so Delete reaches the list, but without the system ring:
+        // a 2pt accent outline around the entire sidebar reads as the drag
+        // target state, which is a different message entirely.
+        .focusable()
+        .focusEffectDisabled()
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: Tokens.Space.xs) {
+            SectionLabel(text: "Movies")
+            Spacer()
+            if model.selectedIDs.count > 1 {
+                Text("\(model.selectedIDs.count) selected")
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.accent)
+            }
+            Button {
+                model.chooseFiles()
+            } label: {
+                Image(systemName: "plus")
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.textSecondary)
+                    .frame(width: Tokens.Layout.iconButton, height: Tokens.Layout.iconButton)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pressable()
+            .help("Add movies")
+            .accessibilityLabel("Add movies")
+        }
+        .padding(.horizontal, Tokens.Space.m)
+        .frame(height: Tokens.Layout.paneHeaderHeight)
+    }
+
+    private var dragWake: some View {
+        RoundedRectangle(cornerRadius: Tokens.Radius.panel, style: .continuous)
+            .strokeBorder(
+                isTargeted ? Tokens.Palette.accent : .clear,
+                lineWidth: Tokens.Layout.focusRingWidth
+            )
+            .padding(Tokens.Space.xxs)
+    }
+
+    // MARK: Rows
+
+    private func row(_ conversion: Conversion) -> some View {
+        QueueRow(
+            conversion: conversion,
+            isSelected: model.selectedIDs.contains(conversion.id),
+            isFocused: conversion.id == model.selectionID
+        )
+        .onTapGesture { handleTap(conversion) }
+        .contextMenu { rowMenu(conversion) }
+    }
+
+    /// Finder click semantics. Shift takes the run, command picks and chooses,
+    /// a plain click starts over.
+    private func handleTap(_ conversion: Conversion) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.shift) {
+            model.extendSelection(to: conversion)
+        } else if flags.contains(.command) {
+            model.toggleSelection(conversion)
+        } else {
+            model.select(conversion)
+        }
+    }
+
+    /// The way out of "what now". After a conversion lands, the next thing a
+    /// person wants is another movie, and the only way to say so used to be a
+    /// plus in the toolbar at the opposite end of the window.
+    private var addMoreButton: some View {
+        Button {
+            model.chooseFiles()
+        } label: {
+            HStack(spacing: Tokens.Space.s) {
+                Image(systemName: "plus")
+                    .font(Tokens.Font.caption)
+                Text(model.conversions.isEmpty ? "Add movies" : "Add more movies")
+                    .font(Tokens.Font.body)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Tokens.Palette.textSecondary)
+            .padding(.horizontal, Tokens.Space.m)
+            .frame(height: Tokens.Layout.queueRowHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pressable()
     }
 
     @ViewBuilder
@@ -65,18 +161,55 @@ struct QueueSidebarView: View {
         if case .done(let url) = conversion.status {
             Button("Send to Vision Pro") { model.share(url) }
             Button("Show in Finder") { model.reveal(url) }
-            Button("Convert Again") { model.reconvert(conversion) }
+            Button("Convert this again") { model.reconvert(conversion) }
                 .disabled(model.isConverting)
             Divider()
         }
-        Button("Remove from Queue") { model.remove(conversion) }
-            .disabled(conversion.status.isConverting)
+        if model.selectedIDs.count > 1, model.selectedIDs.contains(conversion.id) {
+            Button("Remove \(model.selectedIDs.count) movies") { model.removeSelected() }
+        } else {
+            Button("Remove") { model.remove(conversion) }
+                .disabled(conversion.status.isConverting)
+        }
+    }
+}
+
+/// A sticky section header, with an optional action on the right.
+struct QueueSectionHeader: View {
+    let title: String
+    let count: Int
+    var trailing: String?
+    var action: (() -> Void)?
+
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: Tokens.Space.xs) {
+            SectionLabel(text: title)
+            Text("\(count)")
+                .font(Tokens.Font.monoCaption)
+                .foregroundStyle(Tokens.Palette.textTertiary)
+            Spacer()
+            if let trailing, let action {
+                Button(trailing, action: action)
+                    .buttonStyle(.plain)
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(isHovering ? Tokens.Palette.accent : Tokens.Palette.textTertiary)
+            }
+        }
+        .padding(.horizontal, Tokens.Space.m)
+        .frame(height: Tokens.Layout.sectionHeaderHeight)
+        .background(.ultraThinMaterial)
+        .onHover { isHovering = $0 }
     }
 }
 
 struct QueueRow: View {
     let conversion: Conversion
     let isSelected: Bool
+    /// The one row driving the stage. Distinct from selection, because a
+    /// thirteen row selection still shows exactly one picture.
+    let isFocused: Bool
 
     @State private var isHovering = false
     /// Drives the stereo fuse when a conversion lands.
@@ -84,11 +217,6 @@ struct QueueRow: View {
 
     var body: some View {
         HStack(spacing: Tokens.Space.s) {
-            // The 2pt leading bar encodes selection.
-            Rectangle()
-                .fill(isSelected ? Tokens.Palette.accent : .clear)
-                .frame(width: Tokens.Layout.selectionBarWidth)
-
             thumbnail
 
             VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
@@ -97,8 +225,15 @@ struct QueueRow: View {
             }
 
             Spacer(minLength: 0)
+
+            // The finished row's whole point is getting the file to the
+            // headset, so the action lives on the row rather than three clicks
+            // away in a context menu.
+            if case .done(let url) = conversion.status, isHovering {
+                SendGlyph(url: url)
+            }
         }
-        .padding(.trailing, Tokens.Space.s)
+        .padding(.horizontal, Tokens.Space.s)
         .padding(.vertical, Tokens.Space.xs)
         .frame(minHeight: Tokens.Layout.queueRowHeight)
         .background(background)
@@ -172,6 +307,7 @@ struct QueueRow: View {
                 Text("\(Int(fraction * 100))%")
                     .font(Tokens.Font.monoCaption)
                     .foregroundStyle(Tokens.Palette.accent)
+                    .contentTransition(.numericText())
                 if let remaining = conversion.estimatedSecondsRemaining {
                     Text("\(AppModel.humanDuration(remaining)) left")
                         .font(Tokens.Font.caption)
@@ -181,7 +317,9 @@ struct QueueRow: View {
 
         case .done:
             HStack(spacing: Tokens.Space.xs) {
-                Chip(text: "Done", tone: .accent)
+                Text("Ready to send")
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.textSecondary)
                 if conversion.settingsChangedSinceExport {
                     Chip(text: "Settings changed")
                 }
@@ -236,20 +374,73 @@ struct QueueRow: View {
         .frame(width: Tokens.Layout.thumbnailSize, height: Tokens.Layout.thumbnailSize)
     }
 
+    /// Selection, the way macOS draws it.
+    ///
+    /// There used to be a 2pt accent bar down the leading edge. That is the
+    /// Bootstrap list-group pattern, and no Apple list has ever used it: Finder,
+    /// Mail, Music and the Xcode navigator all encode selection as a filled
+    /// rounded rectangle inset from the edges. The bar is gone.
     private var background: some View {
-        Group {
-            if isSelected {
-                Tokens.Palette.selectionFill
-            } else if isHovering {
-                Tokens.Palette.panelRaised
-            } else {
-                Color.clear
+        RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
+            .fill(fill)
+            .overlay {
+                // The focused row is the one on the stage. In a multi row
+                // selection that needs saying, quietly, without a second colour.
+                if isFocused && isSelected {
+                    RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
+                        .strokeBorder(Tokens.Palette.accent.opacity(0.55), lineWidth: Tokens.Layout.hairlineWidth)
+                }
             }
-        }
+            .padding(.horizontal, Tokens.Space.xs)
+            .padding(.vertical, Tokens.Space.xxs)
     }
+
+    private var fill: Color {
+        if isSelected { return Tokens.Palette.selectionFill }
+        if isHovering { return Tokens.Palette.panelRaised }
+        return .clear
+    }
+}
+
+/// A small share glyph that appears on a finished row when you point at it.
+private struct SendGlyph: View {
+    let url: URL
+
+    @State private var anchor: NSView?
+
+    var body: some View {
+        Button {
+            guard let anchor else { return }
+            NSSharingServicePicker(items: [url])
+                .show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.textSecondary)
+                .frame(width: Tokens.Layout.iconButton, height: Tokens.Layout.iconButton)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(RowShareAnchor(view: $anchor))
+        .help("Send to Vision Pro")
+        .accessibilityLabel("Send to Vision Pro")
+    }
+}
+
+private struct RowShareAnchor: NSViewRepresentable {
+    @Binding var view: NSView?
+
+    func makeNSView(context: Context) -> NSView {
+        let anchor = NSView()
+        DispatchQueue.main.async { view = anchor }
+        return anchor
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 #Preview {
     QueueSidebarView(model: AppModel(), isTargeted: false)
         .frame(width: Tokens.Layout.sidebarWidth, height: 500)
+        .environment(AppearanceSettings())
 }
