@@ -5,5 +5,6 @@
 # xcodegen writes this from project.yml.
 *.xcodeproj
 
-# xcodebuild's derived data for this project.
+# xcodebuild's derived data for this project, simulator and device.
 .build/
+.build-device/

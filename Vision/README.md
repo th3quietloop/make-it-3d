@@ -16,6 +16,15 @@ xcodebuild -project MakeIt3DVision.xcodeproj -scheme MakeIt3DVision \
   -derivedDataPath .build build
 ```
 
+On the headset. Signing is automatic under team `8J4SDPB6A2`, set in
+`project.yml` rather than in Xcode, because xcodegen rewrites the project and a
+team picked in the UI is gone at the next generate.
+
+```
+xcodebuild -project MakeIt3DVision.xcodeproj -scheme MakeIt3DVision \
+  -destination 'generic/platform=visionOS' -derivedDataPath .build-device build
+```
+
 Install and launch on a booted simulator:
 
 ```
@@ -182,6 +191,33 @@ which is the natural reading, and is what `SyntheticDepthClip` writes and what
 `upsampleNearness` in the shader consumes. **The Mac side has to use the same
 equation or a cut will jump.** If the Mac has chosen the inverse, say so and the
 PRD gets one clarifying line rather than either side changing quietly.
+
+## Xcode's recommended settings
+
+Xcode offers an "Update to recommended settings" sweep on this project. Do not
+apply it. Not because the suggestions are wrong, but because they are written
+into the `.xcodeproj`, which xcodegen regenerates from `project.yml`, so they
+would quietly disappear at the next generate.
+
+The two worth having are in `project.yml` already: dead code stripping is on,
+and user script sandboxing is explicitly off.
+
+Sandboxing is off because it breaks the sign gate, measured rather than assumed:
+
+```
+Sandbox: zsh deny(1) file-read-data Scripts/depth_sign_gate.sh
+```
+
+A sandboxed script phase may only touch files it declared as inputs and outputs.
+The gate declares none on purpose: it compiles the checker across every source
+folder and decides whether to re-run by hashing them, which is what keeps an
+incremental build fast. Declaring every source file as an input would work and
+would then have to be kept in step by hand, and a gate that stops running
+because someone added a file is worse than no sandbox at all.
+
+Hardened runtime on `DepthTrackTool` was skipped as well. It is a local
+workbench that is never distributed, and the Mac app turns it off for the same
+reason.
 
 ## Layout
 
