@@ -283,6 +283,34 @@ window picks its own scale for relative depth, so the overlapping frames are
 fitted onto the previous window's values before anything is written. Without
 that the depth steps visibly at every seam.
 
+### It converts, it is correct, and it is far too slow
+
+Measured on the same synthetic clip in the same Debug build:
+
+| Model | Throughput |
+| ----- | ---------- |
+| Depth Anything V2 Small, per frame | 12.5 fps |
+| Video Depth Anything Small, 32 frame window | 0.04 fps |
+
+Roughly 300 times slower. The output is right (all six verification checks
+pass, frame parity exact, the spatial CLI agrees) and the traced graph matches
+the eager model to a max delta of zero, so this is not a correctness problem. It
+is a performance one, and a decisive one: 120 frames took 47 minutes.
+
+The cause is almost certainly that the graph does not fit the Neural Engine. The
+input is a 5D tensor and the temporal modules reshape and permute in 5D
+throughout, while the ANE wants 4D NCHW. Loading the model even to inspect its
+compute plan takes over ten minutes, which points the same way. Shrinking the
+window would help linearly and nowhere near enough: the gap is three orders of
+magnitude, not one.
+
+So the per frame model stays the default, the video model is labelled
+**Steady (slow)** and marked experimental, and Relief refuses to start a run
+that would take more than a few minutes without saying how long it would be and
+offering to switch back. Making it practical means restructuring the conversion
+around 4D operations so the ANE will take it, which is a real project rather
+than a tweak.
+
 ## The sandbox decision
 
 Relief is ad hoc signed, unsandboxed, and has no entitlements. This is a personal tool run

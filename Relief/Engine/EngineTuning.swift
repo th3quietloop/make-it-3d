@@ -128,19 +128,32 @@ struct EngineTuning: Sendable, Equatable, Codable {
 
         var label: String {
             switch self {
-            case .perFrame: return "Fast"
-            case .video: return "Steady"
+            case .perFrame: return "Normal"
+            case .video: return "Steady (slow)"
             }
         }
 
         var explanation: String {
             switch self {
             case .perFrame:
-                return "Reads each frame on its own. Quicker, but depth can drift slightly across a shot."
+                return "Reads each frame on its own. Depth can drift slightly across a shot, which Relief smooths out."
             case .video:
-                return "Reads a run of frames together, so depth holds still. Slower, and the better choice for anything long."
+                return "Reads a run of frames together, so depth holds perfectly still. Measured at roughly 300 times slower than Normal, so it is only realistic on clips of a few seconds."
             }
         }
+
+        /// Roughly how many frames a second this model manages, measured on the
+        /// synthetic clip. Used to warn before someone starts something that
+        /// would run for weeks.
+        var measuredFramesPerSecond: Double {
+            switch self {
+            case .perFrame: return 30
+            case .video: return 0.04
+            }
+        }
+
+        /// True for a model that is correct but not yet practical.
+        var isExperimental: Bool { self == .video }
     }
 
     /// Defaults to the per frame model, because it is the one that is always

@@ -417,9 +417,47 @@ final class AppModel {
         return false
     }
 
+    /// Stops someone starting a conversion that would run for days.
+    ///
+    /// The video depth model is correct but roughly 300 times slower than the
+    /// per frame one, so on anything longer than a short clip it is not a slow
+    /// conversion, it is one that never finishes. Better to say so with a real
+    /// number than to let a progress bar sit at 1% overnight.
+    private func confirmSlowModel(for conversion: Conversion, probe: SourceProbe) -> Bool {
+        let model = conversion.tuning.depthModel
+        guard model.isExperimental else { return true }
+
+        let seconds = Double(probe.estimatedFrameCount) / model.measuredFramesPerSecond
+        // Under a few minutes is nobody's problem.
+        guard seconds > 300 else { return true }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "This would take about \(Self.humanDuration(seconds))."
+        alert.informativeText = """
+            Steady depth reads a run of frames at a time, which holds depth \
+            perfectly still but runs far slower than Normal. On \
+            \(probe.displayDuration) of video that is not practical yet.
+
+            Normal converts the same clip in about \
+            \(Self.humanDuration(Double(probe.estimatedFrameCount) / 30)).
+            """
+        alert.addButton(withTitle: "Use Normal Instead")
+        alert.addButton(withTitle: "Go Ahead Anyway")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            var updated = conversion.tuning
+            updated.depthModel = .perFrame
+            conversion.tuning = updated
+            toasts.info("Switched to Normal depth", detail: "Steady is only realistic on short clips.")
+        }
+        return true
+    }
+
     private func convert(_ conversion: Conversion) async {
         guard let probe = conversion.probe else { return }
         guard hasRoom(for: probe) else { return }
+        guard confirmSlowModel(for: conversion, probe: probe) else { return }
 
         SystemNotifier.prepare()
 
