@@ -11,3 +11,4 @@ Tools/modelconv/vda/
 Tools/modelconv/weights/
 Tools/modelconv/*.mlpackage
 Tools/modelconv/debug_node.py
+Tools/modelconv/da3/
