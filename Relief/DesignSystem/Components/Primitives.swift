@@ -204,9 +204,11 @@ struct SendToHeadsetButton: View {
     let url: URL
 
     @State private var isHovering = false
+    @State private var anchor: NSView?
+    @State private var missingFile = false
 
     var body: some View {
-        ShareLink(item: url) {
+        Button(action: present) {
             Text("Send to Vision Pro")
                 .font(Tokens.Font.bodyMedium)
                 .foregroundStyle(Tokens.Palette.stage)
@@ -216,10 +218,54 @@ struct SendToHeadsetButton: View {
         .modifier(PrimaryActionSurface(
             isHovering: isHovering, isPressed: false, isFocused: false
         ))
+        .background(ShareAnchor(view: $anchor))
         .onHover { isHovering = $0 }
+        .pressable()
         .help("AirDrop it to the headset, or send it anywhere else.")
         .accessibilityLabel("Send to Vision Pro")
+        .alert("That file has moved", isPresented: $missingFile) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Relief can't find \(url.lastPathComponent) where it left it. Convert again to make a fresh copy.")
+        }
     }
+
+    /// Opens the share menu against this button.
+    ///
+    /// This deliberately does not use ShareLink. On this file SwiftUI's
+    /// ShareLink presents a menu with the file header and nothing under it,
+    /// while NSSharingServicePicker resolves eight services for the same URL,
+    /// AirDrop among them. Handing the file to the headset is the last step of
+    /// the whole app, so it goes through the API that actually populates.
+    private func present() {
+        guard FileManager.default.isReadableFile(atPath: url.path) else {
+            // An empty share menu is the worst possible failure here, because
+            // it looks like the app is broken rather than like the file is
+            // gone. Say which one it is.
+            missingFile = true
+            return
+        }
+        guard let anchor else { return }
+        NSSharingServicePicker(items: [url])
+            .show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+    }
+}
+
+/// Hands SwiftUI an AppKit view to hang a share menu off.
+///
+/// NSSharingServicePicker anchors to an NSView and a rect. This grabs the one
+/// sitting behind the button so the menu opens on the button rather than in
+/// the corner of the window.
+private struct ShareAnchor: NSViewRepresentable {
+    @Binding var view: NSView?
+
+    func makeNSView(context: Context) -> NSView {
+        let anchor = NSView()
+        DispatchQueue.main.async { view = anchor }
+        return anchor
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 /// A small chip, used for Done, Failed, and Settings changed.
