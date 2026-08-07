@@ -20,16 +20,19 @@ struct TheatreView: View {
     @State private var root = Entity()
     @State private var screen = ModelEntity()
     @State private var surround = ModelEntity()
+    @State private var console = Entity()
     @State private var updates: EventSubscription?
 
     var body: some View {
         RealityView { content in
             root.addChild(surround)
             root.addChild(screen)
+            root.addChild(console)
             content.add(root)
 
             await buildScreen()
             buildSurround()
+            buildConsole()
             layout()
 
             updates = content.subscribe(to: SceneEvents.Update.self) { _ in
@@ -92,6 +95,18 @@ struct TheatreView: View {
         }
     }
 
+    /// The dial, in the room, under the picture.
+    ///
+    /// This is where the product actually happens, and it is why it is not left
+    /// in the control window. A window sits at eye height in front of you, which
+    /// is on top of the screen, so reaching for the dial means the picture is
+    /// behind the thing you are adjusting it with. Under the screen, at the same
+    /// distance, it is a glance down and a pinch, and the picture never leaves
+    /// your view while you change it.
+    private func buildConsole() {
+        console.components.set(ViewAttachmentComponent(rootView: TheatreConsole(model: model)))
+    }
+
     /// A dimmable surround, so the picture is the brightest thing in the space.
     ///
     /// A sphere with its normals turned inward, unlit and near black. At full
@@ -115,12 +130,41 @@ struct TheatreView: View {
     }
 
     private func layout() {
-        screen.position = SIMD3<Float>(0, Float(room.screenHeightMetres), -Float(room.distanceMetres))
         let aspect = model.file.map { Double($0.width) / Double($0.height) } ?? 16.0 / 9.0
+        let height = room.screenWidthMetres / aspect
+
+        screen.position = SIMD3<Float>(0, Float(room.screenHeightMetres), -Float(room.distanceMetres))
         screen.model?.mesh = .generatePlane(
             width: Float(room.screenWidthMetres),
-            height: Float(room.screenWidthMetres / aspect)
+            height: Float(height)
         )
+
+        // Under the picture, tipped up so it faces the viewer rather than the
+        // ceiling, and a little nearer than the screen so it never fights the
+        // picture for the same depth.
+        console.position = SIMD3<Float>(
+            0,
+            Float(room.screenHeightMetres - height / 2 - room.consoleDropMetres),
+            -Float(room.distanceMetres) + 0.05
+        )
+        console.orientation = simd_quatf(angle: -.pi / 12, axis: SIMD3<Float>(1, 0, 0))
+        console.isEnabled = model.status == .playing
+
+        // The attachment is laid out in points, and how many metres that comes
+        // to depends on the system. Rather than guess a scale factor, ask the
+        // component how wide it actually is and scale it to a fixed share of
+        // the screen, so the console stays in proportion at any screen size.
+        if let attachment = console.components[ViewAttachmentComponent.self] {
+            let authored = attachment.bounds.extents.x
+            if authored > 0.001 {
+                let target = Float(room.screenWidthMetres * 0.55)
+                console.scale = SIMD3<Float>(repeating: target / authored)
+                model.recordConsoleSize(authored: authored, rendered: target)
+            } else {
+                model.recordConsoleSize(authored: authored, rendered: 0)
+            }
+        }
+
         surround.model?.materials = [surroundMaterial()]
     }
 }
@@ -135,10 +179,21 @@ final class RoomSettings {
     var distanceMetres: Double = 4.0
     /// Slightly below eye level, the way a screen in a room is.
     var screenHeightMetres: Double = -0.2
+
+    /// How far under the picture the dial sits.
+    ///
+    /// Adjustable rather than fixed, because where a control wants to be
+    /// depends on how big the screen is and how the person is sitting, and a
+    /// dial you have to hunt for is a dial you stop using. Negative values put
+    /// it over the bottom of the picture, the way a transport bar sits on a
+    /// television.
+    var consoleDropMetres: Double = 0.12
+
     /// 0 leaves the room as it is, 1 is fully surrounded by the stage colour.
     var dimming: Double = 0.0
 
     static let widthRange = 1.0...8.0
     static let distanceRange = 1.5...9.0
     static let heightRange = -1.2...1.2
+    static let consoleDropRange = -0.4...0.8
 }

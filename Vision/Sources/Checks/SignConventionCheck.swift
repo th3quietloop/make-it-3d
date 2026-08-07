@@ -120,10 +120,12 @@ enum SignConventionCheck {
         let leftBuffer = try PixelBuffers.makeColor(width: width, height: height)
         let rightBuffer = try PixelBuffers.makeColor(width: width, height: height)
 
-        let source = try bridge.texture(from: sourceBuffer, format: .bgra8Unorm)
+        // Bound in exactly the formats the player binds, so the check measures
+        // the pipeline the film goes through rather than a linear stand in.
+        let source = try bridge.texture(from: sourceBuffer, format: StereoWarpRenderer.sourceFormat)
         let depth = try bridge.lumaTexture(from: depthBuffer)
-        let left = try bridge.texture(from: leftBuffer, format: .bgra8Unorm)
-        let right = try bridge.texture(from: rightBuffer, format: .bgra8Unorm)
+        let left = try bridge.texture(from: leftBuffer, format: StereoWarpRenderer.eyeFormat)
+        let right = try bridge.texture(from: rightBuffer, format: StereoWarpRenderer.eyeFormat)
 
         let renderer = try StereoWarpRenderer(
             device: device,

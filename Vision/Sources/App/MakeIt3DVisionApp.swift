@@ -23,7 +23,7 @@ struct MakeIt3DVisionApp: App {
                             // something to put in it.
                             _ = await openImmersiveSpace(id: "theatre")
                             if SelfTest.isRequested {
-                                await SelfTest.run(model: model)
+                                await SelfTest.run(model: model, room: room)
                             }
                         }
                 case .failed(let message):

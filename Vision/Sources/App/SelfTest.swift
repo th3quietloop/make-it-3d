@@ -21,11 +21,36 @@ enum SelfTest {
         URL.documentsDirectory.appending(path: "selftest.txt")
     }
 
+    /// Where the warp's budget comes from.
+    ///
+    /// The warp runs once per video frame, not once per display frame, so a
+    /// stereo pair has a whole video frame to be synthesized in. At 30 fps that
+    /// is 33.3 ms. Spending more than a third of it is the point at which the
+    /// warp starts competing with everything else on the GPU.
+    private static let warpBudgetFraction = 0.33
+
     /// How long to watch before writing anything down. Long enough for the
     /// warp to have run several hundred times and for at least one cut to have
     /// gone past, so the shot change path is included rather than assumed.
     private static let settleSeconds = 4.0
     private static let watchSeconds = 12.0
+
+    /// Arranged for measurement, not for watching.
+    ///
+    /// A simulator looks in one fixed direction, so the picture and the dial
+    /// have to be in the same view for a screenshot to show both. On a head
+    /// this would be a glance down; here it has to be a layout.
+    private static func arrangeForMeasurement(_ room: RoomSettings) {
+        room.screenWidthMetres = 2.2
+        room.screenHeightMetres = 0.25
+        room.distanceMetres = 3.4
+        room.consoleDropMetres = -0.05
+    }
+
+    static func run(model: PlayerModel, room: RoomSettings) async {
+        arrangeForMeasurement(room)
+        await run(model: model)
+    }
 
     static func run(model: PlayerModel) async {
         var lines = [String]()
@@ -60,11 +85,29 @@ enum SelfTest {
 
         try? await Task.sleep(for: .seconds(settleSeconds))
         say("Screen      \(model.screenMaterial.summary)")
+        say(String(
+            format: "Console     authored %.4f, rendered %.3f m",
+            model.consoleAuthoredWidth, model.consoleWidthMetres
+        ))
+        say("")
+
+        // The sign convention, measured here rather than only on the Mac that
+        // compiled the shaders. This is a different GPU running a different
+        // compilation of the same source, and the sign is the one thing this
+        // project has already been wrong about once.
+        do {
+            for result in try model.runSignConventionCheck() {
+                say(result.line)
+            }
+        } catch {
+            say("FAIL  Stereo sign convention: could not run. \(error.localizedDescription)")
+        }
         say("")
 
         // Reset so the settling period does not colour the reading.
         model.performance.reset()
         model.resetPairing()
+        model.resetDialLatency()
 
         // The dial gets turned during the watch, because the question Phase 3
         // asks is whether frame rate survives someone moving it, not whether it
@@ -127,6 +170,8 @@ enum SelfTest {
         say("Pairing     \(pairing.exactMatches) exact, \(pairing.nearMatches) near, "
             + "\(pairing.misses) missed, \(pairing.missingDepthFrames) with no depth")
         say("Frame index \(model.indexMismatches) mismatched of \(model.indexFramesChecked) checked")
+        say("Dial        \(model.dialChangesSeen) changes drawn, worst latency "
+            + "\(model.dialLatencyWorstFrames) display frame(s)")
         say("")
 
         // MARK: Verdicts
@@ -149,6 +194,23 @@ enum SelfTest {
             name: "Both eyes are being synthesized",
             passed: model.screenMaterial == .perEye,
             detail: model.screenMaterial.summary
+        )
+        let budget = 1000.0 / file.frameRate * warpBudgetFraction
+        verdict(
+            &lines,
+            name: "The warp fits inside a video frame",
+            passed: worst.worstWarpMilliseconds > 0 && worst.worstWarpMilliseconds <= budget,
+            detail: String(
+                format: "worst pair %.2f ms against a %.1f ms budget, which is %.0f%% of a %.0f fps frame",
+                worst.worstWarpMilliseconds, budget, warpBudgetFraction * 100, file.frameRate
+            )
+        )
+        verdict(
+            &lines,
+            name: "The dial is visible within one frame",
+            passed: model.dialChangesSeen > 0 && model.dialLatencyWorstFrames <= 1,
+            detail: "worst \(model.dialLatencyWorstFrames) display frame(s) "
+                + "over \(model.dialChangesSeen) changes, want at most 1"
         )
         verdict(
             &lines,

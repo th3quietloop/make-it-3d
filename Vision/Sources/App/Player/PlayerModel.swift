@@ -83,6 +83,18 @@ final class PlayerModel {
         screenMaterial = status
     }
 
+    /// How wide the spatial console came out, in metres, and how wide the view
+    /// inside it was authored. Recorded because how a SwiftUI attachment's
+    /// points become metres is a system detail, and the console has to be sized
+    /// against what it actually measures rather than against a guess.
+    private(set) var consoleAuthoredWidth: Float = 0
+    private(set) var consoleWidthMetres: Float = 0
+
+    func recordConsoleSize(authored: Float, rendered: Float) {
+        consoleAuthoredWidth = authored
+        consoleWidthMetres = rendered
+    }
+
     // MARK: Engine
 
     private let device: MTLDevice
@@ -97,6 +109,17 @@ final class PlayerModel {
     /// Set when the dial moves, cleared when the next frame is drawn.
     private var needsRerender = false
     private var lastShotNumber: Int?
+
+    /// How long the dial takes to show up, counted in display frames.
+    ///
+    /// This is Phase 3's gate expressed as a number rather than an impression.
+    /// One frame is the answer the design demands, and one frame is what going
+    /// through the display loop rather than rendering inside the gesture
+    /// handler should produce. Measured because "should" is not a measurement.
+    private var displayFrameCounter = 0
+    private var dialMovedAtFrame: Int?
+    private(set) var dialChangesSeen = 0
+    private(set) var dialLatencyWorstFrames = 0
 
     /// The player for a file with no depth track, handed straight to
     /// RealityKit's own MV-HEVC playback.
@@ -273,6 +296,31 @@ final class PlayerModel {
         // going through it keeps one path instead of two and still lands
         // inside the one frame the gate asks for.
         needsRerender = true
+        if dialMovedAtFrame == nil { dialMovedAtFrame = displayFrameCounter }
+    }
+
+    /// Records that the dial's effect has now been drawn.
+    private func noteDialLanded() {
+        guard let moved = dialMovedAtFrame else { return }
+        dialLatencyWorstFrames = max(dialLatencyWorstFrames, displayFrameCounter - moved)
+        dialChangesSeen += 1
+        dialMovedAtFrame = nil
+    }
+
+    func resetDialLatency() {
+        dialMovedAtFrame = nil
+        dialChangesSeen = 0
+        dialLatencyWorstFrames = 0
+    }
+
+    /// Runs the stereo sign convention check on this machine's GPU, through the
+    /// shaders in this app's bundle.
+    ///
+    /// The build time gate proves the sign on the Mac that compiled it. This
+    /// proves it where the film is actually watched, which is a different GPU
+    /// running a different compilation of the same source.
+    func runSignConventionCheck() throws -> [CheckResult] {
+        try SignConventionCheck.run(library: library, device: device, tuning: tuning)
     }
 
     /// Forward pop and depth behind the screen, in pixels, for the shot in
@@ -290,6 +338,7 @@ final class PlayerModel {
     /// Called once per display frame from the RealityView's update subscription.
     func onDisplayFrame() {
         performance.recordDisplayFrame()
+        displayFrameCounter += 1
 
         guard let playback, let renderer, let eyes else { return }
 
@@ -331,8 +380,8 @@ final class PlayerModel {
         if indexChecking { checkFrameIndex(frame) }
 
         do {
-            let color = try bridge.texture(from: frame.color, format: .bgra8Unorm)
-            let depth = try bridge.texture(from: frame.depth, format: .bgra8Unorm)
+            let color = try bridge.texture(from: frame.color, format: StereoWarpRenderer.sourceFormat)
+            let depth = try bridge.texture(from: frame.depth, format: StereoWarpRenderer.depthFormat)
 
             guard let commandBuffer = queue.makeCommandBuffer() else { return }
             let targets = eyes.writable(using: commandBuffer)
@@ -358,6 +407,7 @@ final class PlayerModel {
             }
             commandBuffer.commit()
             needsRerender = false
+            noteDialLanded()
         } catch {
             status = .failed(error.localizedDescription)
         }
@@ -376,6 +426,7 @@ final class PlayerModel {
         performance.measure(commandBuffer)
         commandBuffer.commit()
         needsRerender = false
+        noteDialLanded()
     }
 
     /// Reads the frame index out of both pictures and counts disagreements.

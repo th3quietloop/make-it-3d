@@ -84,37 +84,27 @@ struct ControlsView: View {
         VStack(alignment: .leading, spacing: VisionTokens.Space.l) {
             transport
 
-            DepthDial(
-                value: model.tuning.strength,
-                range: StereoTuning.strengthRange,
-                label: "Depth",
-                format: { String(format: "%.2f %%", $0 * 100) },
-                // Written as a closure rather than passed as a method
-                // reference. A bare `model.setStrength` makes Swift 6.3.3
-                // build a reabstraction thunk between an isolated and a
-                // non isolated function type, and that thunk crashes the
-                // compiler's IR generation. The closure does the same work
-                // without producing one.
-                onChange: { model.setStrength($0) }
-            )
+            // The depth dial itself is not here. It lives under the picture, in
+            // the room, because changing depth means watching the change, and a
+            // window sits between you and the screen.
+            Text("The depth dial is under the picture.")
+                .font(VisionTokens.Font.caption)
+                .foregroundStyle(VisionTokens.Palette.textTertiary)
 
             DepthDial(
                 value: model.tuning.convergence,
                 range: StereoTuning.convergenceRange,
                 label: "Screen plane",
+                // Written as a closure rather than passed as a method
+                // reference. A bare `model.setConvergence` makes Swift 6.3.3
+                // build a reabstraction thunk between an isolated and a non
+                // isolated function type, and that thunk crashes the
+                // compiler's IR generation. The closure does the same work
+                // without producing one.
                 format: { String(format: "%.2f", $0) },
                 onChange: { model.setConvergence($0) }
             )
 
-            if let pixels = model.disparityPixels, let file = model.file {
-                DisparityGauge(
-                    forwardPixels: pixels.forward,
-                    behindPixels: pixels.behind,
-                    frameWidth: file.width
-                )
-            }
-
-            suggestionRow
             roomControls
             measurements
         }
@@ -184,22 +174,6 @@ struct ControlsView: View {
         }
     }
 
-    private var suggestionRow: some View {
-        HStack(spacing: VisionTokens.Space.s) {
-            if model.followsSuggestions {
-                Text("Following the film's own reading of this shot.")
-                    .font(VisionTokens.Font.caption)
-                    .foregroundStyle(VisionTokens.Palette.textTertiary)
-            } else {
-                Text("You have taken over the depth.")
-                    .font(VisionTokens.Font.caption)
-                    .foregroundStyle(VisionTokens.Palette.textSecondary)
-                Button("Hand it back") { model.followSuggestions() }
-                    .font(VisionTokens.Font.caption)
-            }
-        }
-    }
-
     private var roomControls: some View {
         VStack(alignment: .leading, spacing: VisionTokens.Space.s) {
             SectionLabel("The room")
@@ -221,6 +195,12 @@ struct ControlsView: View {
                 value: Binding(get: { room.screenHeightMetres }, set: { room.screenHeightMetres = $0 }),
                 range: RoomSettings.heightRange,
                 readout: String(format: "%+.1f m", room.screenHeightMetres)
+            )
+            labelledSlider(
+                "Dial position",
+                value: Binding(get: { room.consoleDropMetres }, set: { room.consoleDropMetres = $0 }),
+                range: RoomSettings.consoleDropRange,
+                readout: String(format: "%+.2f m", room.consoleDropMetres)
             )
             labelledSlider(
                 "Dim the room",
@@ -286,6 +266,11 @@ struct ControlsView: View {
                         "\(model.indexMismatches) mismatched of \(model.indexFramesChecked)"
                     )
                 }
+                measurement(
+                    "Dial latency, worst",
+                    "\(model.dialLatencyWorstFrames) display frame(s)"
+                )
+                measurement("Screen", model.screenMaterial.summary)
                 if let shot = model.shot {
                     measurement("Shot", "\(shot.shot)")
                     measurement("Comfort load", String(format: "%.2f", shot.comfortLoad))

@@ -283,30 +283,3 @@ kernel void seedBackgroundPlate(
     if (gid.x >= plate.get_width() || gid.y >= plate.get_height()) { return; }
     plate.write(source.read(gid), gid);
 }
-
-// MARK: - Depth visualisation
-//
-// The silver ramp from the design file. Explicitly not turbo or viridis: the
-// rainbow ramp is an AI demo tell and it is banned in this project.
-
-struct RampUniforms {
-    float3 nearColour;
-    float3 farColour;
-    float  minNearness;
-    float  maxNearness;
-};
-
-kernel void depthRamp(
-    texture2d<float, access::read>  nearness [[texture(0)]],
-    texture2d<float, access::write> output   [[texture(1)]],
-    constant RampUniforms &u                 [[buffer(0)]],
-    uint2 gid                                [[thread_position_in_grid]])
-{
-    if (gid.x >= output.get_width() || gid.y >= output.get_height()) { return; }
-
-    const float n = nearness.read(gid).r;
-    const float range = max(u.maxNearness - u.minNearness, 1e-5);
-    const float t = clamp((n - u.minNearness) / range, 0.0, 1.0);
-
-    output.write(float4(mix(u.farColour, u.nearColour, t), 1.0), gid);
-}

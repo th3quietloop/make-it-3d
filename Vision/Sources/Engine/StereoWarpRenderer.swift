@@ -52,13 +52,6 @@ final class StereoWarpRenderer {
         var forwardPopScale: Float
     }
 
-    private struct RampUniforms {
-        var nearColour: SIMD3<Float>
-        var farColour: SIMD3<Float>
-        var minNearness: Float
-        var maxNearness: Float
-    }
-
     // MARK: Stored
 
     let device: MTLDevice
@@ -71,7 +64,6 @@ final class StereoWarpRenderer {
     private let disparityPipeline: MTLComputePipelineState
     private let plateUpdatePipeline: MTLComputePipelineState
     private let plateSeedPipeline: MTLComputePipelineState
-    private let rampPipeline: MTLComputePipelineState
 
     /// The warp mesh, in normalized source coordinates.
     private let gridBuffer: MTLBuffer
@@ -94,8 +86,6 @@ final class StereoWarpRenderer {
     /// The colour frame the last `renderFrame` was given, so `rerender` has
     /// something to warp when only the dial moved.
     private var currentSource: MTLTexture?
-    /// The nearness range of the shot in play, for the depth ramp.
-    private var currentShot: ShotMetadata?
 
     // MARK: Setup
 
@@ -126,7 +116,6 @@ final class StereoWarpRenderer {
         disparityPipeline = try computePipeline("nearnessToDisparity")
         plateUpdatePipeline = try computePipeline("updateBackgroundPlate")
         plateSeedPipeline = try computePipeline("seedBackgroundPlate")
-        rampPipeline = try computePipeline("depthRamp")
 
         guard let vertexFunction = library.makeFunction(name: "warpVertex") else {
             throw EngineError.functionMissing("warpVertex")
@@ -208,12 +197,35 @@ final class StereoWarpRenderer {
         lumaTexture = try makeTexture(.r32Float, usage: [.shaderRead, .shaderWrite])
         nearnessTexture = try makeTexture(.r32Float, usage: [.shaderRead, .shaderWrite])
         disparityTexture = try makeTexture(.r32Float, usage: [.shaderRead, .shaderWrite])
-        plateFront = try makeTexture(Self.eyeFormat, usage: [.shaderRead, .shaderWrite])
-        plateBack = try makeTexture(Self.eyeFormat, usage: [.shaderRead, .shaderWrite])
+        // The plate is linear, not sRGB, because a compute shader writes to it
+        // and writing to an sRGB texture from compute is not something every
+        // GPU allows. Everything it holds arrives already linearized by the
+        // sampler and leaves through the warp's sRGB render target, so the
+        // round trip stays correct.
+        plateFront = try makeTexture(.bgra8Unorm, usage: [.shaderRead, .shaderWrite])
+        plateBack = try makeTexture(.bgra8Unorm, usage: [.shaderRead, .shaderWrite])
     }
 
     /// What both eye textures must be, and what the warp pipeline is built for.
-    static let eyeFormat: MTLPixelFormat = .bgra8Unorm
+    ///
+    /// sRGB, and it matters. Decoded video arrives gamma encoded, and a
+    /// renderer that treats those bytes as linear light hands RealityKit a
+    /// picture that is far too bright: mid grey lands somewhere near white and
+    /// the whole film looks washed out. Binding the source as sRGB makes the
+    /// sampler linearize on read, and an sRGB render target re-encodes on
+    /// write, so the numbers that come out are the numbers that went in and
+    /// RealityKit knows what they mean.
+    ///
+    /// Depth deliberately does not get this treatment. Depth levels are data,
+    /// not light, and bending them through a transfer curve would bend the
+    /// depth mapping with them.
+    static let eyeFormat: MTLPixelFormat = .bgra8Unorm_srgb
+    /// The format the colour frame is bound as, matching the eye format so the
+    /// linearize on read and encode on write cancel exactly.
+    static let sourceFormat: MTLPixelFormat = .bgra8Unorm_srgb
+    /// The format the depth frame is bound as. Linear, because it is a
+    /// measurement rather than a picture.
+    static let depthFormat: MTLPixelFormat = .bgra8Unorm
 
     /// Allocates an eye texture of the right size and format.
     func makeEyeTexture() throws -> MTLTexture {
@@ -247,7 +259,6 @@ final class StereoWarpRenderer {
         right: MTLTexture
     ) {
         currentSource = source
-        currentShot = shot
         if startsNewShot { plateSeeded = false }
 
         encodeLuma(commandBuffer, source: source)
@@ -275,29 +286,6 @@ final class StereoWarpRenderer {
         guard let source = currentSource else { return false }
         encodeDisparity(commandBuffer, tuning: tuning)
         encodeEyes(commandBuffer, source: source, tuning: tuning, left: left, right: right)
-        return true
-    }
-
-    /// The depth map as the silver ramp, for judging what the film actually
-    /// said about this frame.
-    func renderDepthRamp(commandBuffer: MTLCommandBuffer, into destination: MTLTexture) -> Bool {
-        guard let shot = currentShot,
-              let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
-
-        var uniforms = RampUniforms(
-            nearColour: DepthRampColours.near,
-            farColour: DepthRampColours.far,
-            // The ramp spans the shot's own range, so a shallow scene uses the
-            // full ramp rather than washing out into the middle of it.
-            minNearness: Float(shot.depthOffset),
-            maxNearness: Float(shot.depthOffset + shot.depthScale)
-        )
-        encoder.setComputePipelineState(rampPipeline)
-        encoder.setTexture(nearnessTexture, index: 0)
-        encoder.setTexture(destination, index: 1)
-        encoder.setBytes(&uniforms, length: MemoryLayout<RampUniforms>.stride, index: 0)
-        dispatch(encoder, pipeline: rampPipeline, width: frameWidth, height: frameHeight)
-        encoder.endEncoding()
         return true
     }
 
@@ -515,13 +503,4 @@ final class StereoWarpRenderer {
         )
         encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
     }
-}
-
-/// The silver depth ramp, as raw components for Metal.
-///
-/// Near #E8E9EC to far #26282E, from MAKEIT3D_DESIGN.md. Explicitly not turbo
-/// or viridis: the rainbow ramp is banned in this project.
-enum DepthRampColours {
-    static let near = SIMD3<Float>(0xE8 / 255.0, 0xE9 / 255.0, 0xEC / 255.0)
-    static let far = SIMD3<Float>(0x26 / 255.0, 0x28 / 255.0, 0x2E / 255.0)
 }

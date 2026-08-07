@@ -15,16 +15,30 @@ enum TestClip {
 
     /// Short enough to write while someone waits, long enough to contain
     /// several cuts, which is what the per shot depth normalization is for.
-    static let spec = DepthTrackSpec(
-        width: 1920,
-        height: 1080,
-        frameRate: 30,
-        frameCount: 450,
-        includeTone: true
-    )
+    ///
+    /// The size can be overridden, because the guardrail the PRD sets is 4K per
+    /// eye and a fixture that only ever exists at 1080p cannot answer that
+    /// question. `MAKEIT3D_TEST_SIZE=4k` writes 3840 by 2160 instead.
+    static var spec: DepthTrackSpec {
+        let is4K = ProcessInfo.processInfo.environment["MAKEIT3D_TEST_SIZE"]?.lowercased() == "4k"
+        return DepthTrackSpec(
+            width: is4K ? 3840 : 1920,
+            height: is4K ? 2160 : 1080,
+            frameRate: 30,
+            // Fewer frames at 4K, because the fixture is written on the device
+            // and nobody should wait two minutes to find out a frame rate.
+            frameCount: is4K ? 180 : 450,
+            includeTone: true
+        )
+    }
 
+    /// Named by size, so the two fixtures can sit side by side rather than one
+    /// silently standing in for the other.
     static var url: URL {
-        URL.documentsDirectory.appending(path: "MakeIt3D Test Clip.mov")
+        let spec = spec
+        return URL.documentsDirectory.appending(
+            path: "MakeIt3D Test Clip \(spec.width)x\(spec.height).mov"
+        )
     }
 
     /// Writes it if it is not already there, and returns where it is.
