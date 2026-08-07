@@ -116,7 +116,27 @@ final class AppModel {
     var upNext: [Conversion] { conversions.filter { !$0.status.isDone } }
 
     /// Rows the queue would pick up on its own.
-    var readyToConvert: [Conversion] { conversions.filter { $0.status.isReady } }
+    var readyToConvert: [Conversion] {
+        conversions.filter { $0.status.isReady || $0.settingsChangedSinceExport }
+    }
+
+    /// What the user has actually picked out.
+    var selectedConversions: [Conversion] {
+        conversions.filter { selectedIDs.contains($0.id) }
+    }
+
+    /// The selection, minus anything already converted or mid flight. This is
+    /// what Convert acts on, because a button that says one thing and does
+    /// another is worse than a button that does nothing.
+    var selectedReady: [Conversion] {
+        selectedConversions.filter { $0.status.isReady || $0.settingsChangedSinceExport }
+    }
+
+    /// True when there is more work in the list than the user has selected, so
+    /// the "do the lot" action is worth showing.
+    var hasUnselectedWork: Bool {
+        readyToConvert.count > selectedReady.count
+    }
 
     /// Set only when the depth model could not be loaded, which is a standing
     /// condition rather than an event. Everything that happens once goes
@@ -438,24 +458,27 @@ final class AppModel {
     /// it. What the queue will not do is make you press Convert thirteen
     /// times: once running, it works through the list on its own, and anything
     /// added while it runs joins the end.
-    func startQueue() {
+    func startQueue(_ work: [Conversion]? = nil) {
         guard conversionTask == nil else { return }
-        guard !readyToConvert.isEmpty else { return }
+        let batch = work ?? readyToConvert
+        guard !batch.isEmpty else { return }
 
         queueRunning = true
-        let total = readyToConvert.count
+        runningIDs = Set(batch.map(\.id))
+        let total = batch.count
         if total > 1 {
             toasts.info("Converting \(total) movies", detail: "They run one after another.")
         }
 
         conversionTask = Task { [weak self] in
-            while let self, self.queueRunning, let next = self.readyToConvert.first {
+            while let self, self.queueRunning, let next = self.nextInRun() {
                 await self.convert(next)
                 guard !Task.isCancelled else { break }
                 if !self.keepGoingAutomatically { break }
             }
             guard let self else { return }
             self.conversionTask = nil
+            self.runningIDs = []
             let wasRunning = self.queueRunning
             self.queueRunning = false
             if wasRunning, total > 1 {
@@ -463,6 +486,20 @@ final class AppModel {
                 self.toasts.success("Queue finished", detail: "\(done) ready to send to the Vision Pro.")
             }
         }
+    }
+
+    /// The batch this run is working through. Held as ids rather than a
+    /// snapshot array so a row removed mid run simply stops being found.
+    private var runningIDs: Set<Conversion.ID> = []
+
+    /// The next row of this run that still needs doing. Anything added while
+    /// the run is going joins it, which is what keepGoingAutomatically means.
+    private func nextInRun() -> Conversion? {
+        if let next = readyToConvert.first(where: { runningIDs.contains($0.id) }) { return next }
+        guard keepGoingAutomatically else { return nil }
+        guard let extra = readyToConvert.first else { return nil }
+        runningIDs.insert(extra.id)
+        return extra
     }
 
     /// Generates the test clip and queues it, so someone with no video to hand
@@ -611,10 +648,18 @@ final class AppModel {
     /// long run sat there until the whole batch ended and someone noticed. The
     /// runner now asks for the next ready row each time round, which is what
     /// makes `keepGoingAutomatically` mean anything.
-    func convertAllReady() { startQueue() }
+    func convertAllReady() { startQueue(readyToConvert) }
 
-    /// The Convert button.
-    func convertSelected() { startQueue() }
+    /// The Convert button. Acts on the selection, and only the selection.
+    ///
+    /// It used to act on everything ready no matter what was highlighted, so
+    /// selecting one movie out of four produced a button reading "Convert 4
+    /// movies". The label was honest about what the button did and the button
+    /// was doing the wrong thing.
+    func convertSelected() {
+        let work = selectedReady.isEmpty ? readyToConvert : selectedReady
+        startQueue(work)
+    }
 
     /// Runs a finished row again, keeping the existing export. The user decides
     /// when they are done, not the button.

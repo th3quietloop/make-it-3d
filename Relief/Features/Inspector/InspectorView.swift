@@ -95,6 +95,19 @@ struct InspectorView: View {
                         .foregroundStyle(Tokens.Palette.textSecondary)
                         .pressable()
                         .frame(minHeight: Tokens.Layout.minTarget)
+                } else if model.hasUnselectedWork {
+                    // The primary button does what you picked. Doing the whole
+                    // list is a real thing to want, so it gets its own control
+                    // saying so, rather than being smuggled into the label of
+                    // a button about the selection.
+                    Button("Convert all \(model.readyToConvert.count) up next") {
+                        model.convertAllReady()
+                    }
+                    .buttonStyle(.plain)
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.accent)
+                    .pressable()
+                    .frame(minHeight: Tokens.Layout.minTarget)
                 } else {
                     destinationNote
                 }
@@ -125,13 +138,16 @@ struct InspectorView: View {
         .frame(minHeight: Tokens.Layout.minTarget)
     }
 
+    /// The button names what it will convert, which is the selection.
+    ///
+    /// It used to count everything ready in the whole list, so one movie
+    /// highlighted out of four read "Convert 4 movies". Selecting one thing and
+    /// being offered an action on four is the kind of small lie that makes
+    /// someone stop trusting the rest of the window.
     private var convertTitle: String {
-        if model.isConverting, model.readyToConvert.count > 1 {
-            return "Converting \(model.readyToConvert.count) more"
-        }
-        if model.readyToConvert.count > 1 {
-            return "Convert \(model.readyToConvert.count) movies"
-        }
+        let count = model.selectedReady.count
+        if model.isConverting { return "Converting" }
+        if count > 1 { return "Convert \(count) movies" }
         return conversion.settingsChangedSinceExport ? "Convert with new settings" : "Convert"
     }
 
