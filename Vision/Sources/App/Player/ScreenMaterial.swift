@@ -66,13 +66,4 @@ enum ScreenMaterial {
         material.faceCulling = .back
         return material
     }
-
-    /// Rebinds the textures on an existing per eye material, for the case where
-    /// a new file has a different frame size and the textures were remade.
-    static func rebind(
-        _ material: inout ShaderGraphMaterial, textures: EyeTextures
-    ) throws {
-        try material.setParameter(name: leftParameter, value: .textureResource(textures.left))
-        try material.setParameter(name: rightParameter, value: .textureResource(textures.right))
-    }
 }

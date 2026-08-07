@@ -129,7 +129,10 @@ final class StereoPlayback {
             forItemTime: itemTime, itemTimeForDisplay: &displayTime
         ) else { return nil }
 
-        guard let match = sink.depth(at: displayTime) else { return nil }
+        // Keyed on the colour buffer first. The player hands back the exact
+        // object the compositor finished with, and object identity cannot be
+        // off by a frame the way a display timestamp can.
+        guard let match = sink.depth(forColor: color, at: displayTime) else { return nil }
 
         return PairedFrame(
             color: color,

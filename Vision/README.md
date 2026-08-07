@@ -62,7 +62,8 @@ Nothing here is an impression. Every line is a number.
 | Frame alignment, two minutes | `check-alignment` | 3600 frames, 0 drift, tolerance 0 |
 | Compositor pairing | `check-pairing` | 300 frames, 300 exact, 0 approximate |
 | Depth levels survive the colour path | `check-pairing` | mean 0.038 levels of 255 |
-| Alignment through the real player | app self test | 361 frames checked, 0 mismatched |
+| Alignment through the real player | app self test | 360 frames checked, 0 mismatched, three runs |
+| Pairing key in the player | app self test | 360 by buffer identity, 0 by time |
 | Dial latency | app self test | worst 1 display frame over 47 changes |
 | Warp cost at 1080p | app self test | 0.17 ms mean, 0.77 ms worst |
 | Warp cost at 4K | app self test | 0.24 ms mean, 2.63 ms worst, against an 11.0 ms budget |
@@ -108,6 +109,25 @@ binary is not.
 **If the device measurement says this does not hold**, Route B is still open and
 most of the work carries over: the warp, the format, the pairing and the checks
 are all independent of how the eye textures reach the eyes.
+
+### Pairing by buffer identity, not by timestamp
+
+The first version keyed a colour frame to its depth frame by
+`itemTimeForDisplay`, the time `AVPlayerItemVideoOutput` hands back with a
+frame. The strips caught it doing the wrong thing roughly one frame in three
+hundred: that time is not always the composition time of the frame returned, so
+a frame occasionally matched a neighbour's depth exactly and the picture carried
+the wrong frame's depth.
+
+The compositor now publishes the colour buffer alongside the depth frame, and
+the player looks up by the colour buffer's own identity. The player hands back
+the exact object the compositor finished with, and object identity cannot be off
+by a frame. Timestamp lookup is still there as a fallback and is counted
+separately, so if identity ever stops holding the numbers will say so rather
+than the picture quietly going wrong.
+
+This is the second time on this project that something looked right and was not.
+It is the argument for the strips.
 
 ### Where the dial lives
 

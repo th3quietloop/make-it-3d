@@ -317,9 +317,12 @@ final class SyntheticDepthClip: DepthTrackFrameSource, @unchecked Sendable {
     /// is exactly `stored / 255 * depthScale + depthOffset` with the scale and
     /// offset this clip writes into the metadata track.
     private static func level(nearness: Double, plan: ShotPlan) -> UInt8 {
-        let normalized = (nearness - plan.farthest) / plan.span
-        let scaled = (min(max(normalized, 0), 1) * 255).rounded()
-        return UInt8(scaled)
+        let normalized = min(max((nearness - plan.farthest) / plan.span, 0), 1)
+        // Derived from the contract's own two named levels rather than from a
+        // literal 255, so a change to the format cannot leave this behind.
+        let floor = Double(DepthTrack.farthestLevel)
+        let span = Double(DepthTrack.nearestLevel) - floor
+        return UInt8((floor + normalized * span).rounded())
     }
 
     // MARK: Tone

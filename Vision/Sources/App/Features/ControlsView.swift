@@ -255,7 +255,8 @@ struct ControlsView: View {
                 measurement(
                     "Frame pairing",
                     """
-                    \(model.pairing.exactMatches) exact, \
+                    \(model.pairing.identityMatches) by buffer, \
+                    \(model.pairing.exactMatches) by time, \
                     \(model.pairing.nearMatches) near, \
                     \(model.pairing.misses) missed
                     """

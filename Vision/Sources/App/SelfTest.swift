@@ -167,8 +167,9 @@ enum SelfTest {
         say("")
 
         let pairing = model.pairing
-        say("Pairing     \(pairing.exactMatches) exact, \(pairing.nearMatches) near, "
-            + "\(pairing.misses) missed, \(pairing.missingDepthFrames) with no depth")
+        say("Pairing     \(pairing.identityMatches) by buffer, \(pairing.exactMatches) by time, "
+            + "\(pairing.nearMatches) near, \(pairing.misses) missed, "
+            + "\(pairing.missingDepthFrames) with no depth")
         say("Frame index \(model.indexMismatches) mismatched of \(model.indexFramesChecked) checked")
         say("Dial        \(model.dialChangesSeen) changes drawn, worst latency "
             + "\(model.dialLatencyWorstFrames) display frame(s)")

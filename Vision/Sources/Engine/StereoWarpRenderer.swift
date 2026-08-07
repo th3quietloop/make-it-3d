@@ -227,19 +227,6 @@ final class StereoWarpRenderer {
     /// measurement rather than a picture.
     static let depthFormat: MTLPixelFormat = .bgra8Unorm
 
-    /// Allocates an eye texture of the right size and format.
-    func makeEyeTexture() throws -> MTLTexture {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: Self.eyeFormat, width: frameWidth, height: frameHeight, mipmapped: false
-        )
-        descriptor.usage = [.shaderRead, .renderTarget]
-        descriptor.storageMode = .private
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
-            throw EngineError.textureAllocationFailed("An eye view at \(frameWidth) by \(frameHeight).")
-        }
-        return texture
-    }
-
     // MARK: Rendering
 
     /// Everything, for one new video frame.

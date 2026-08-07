@@ -19,7 +19,8 @@ struct StereoTuning: Sendable, Equatable {
 
     // MARK: The dial
 
-    /// S, as a fraction of frame width.
+    /// S, as a fraction of frame width. The default is the Mac's Standard
+    /// preset, so a film opened here starts where the Mac would have put it.
     var strength: Double = 0.016
 
     /// C, the nearness that maps to zero disparity.
@@ -35,11 +36,6 @@ struct StereoTuning: Sendable, Equatable {
     static let strengthRange = 0.0...0.036
     static let convergenceRange = 0.05...0.95
 
-    /// The Mac's three presets, so a number here means the same thing there.
-    static let softStrength = 0.010
-    static let standardStrength = 0.016
-    static let deepStrength = 0.024
-
     // MARK: Comfort
 
     /// Positive disparity is content in front of the screen plane. It is scaled
@@ -49,21 +45,12 @@ struct StereoTuning: Sendable, Equatable {
     // MARK: Synthesis
 
     /// How the two eye views are produced.
-    enum Synthesis: String, Sendable, CaseIterable, Identifiable {
+    enum Synthesis: String, Sendable {
         /// Both eyes warped by half the disparity each.
         case symmetric
         /// The left eye is the source frame untouched and the right eye carries
         /// the full disparity.
         case leftEyeUntouched
-
-        var id: String { rawValue }
-
-        var label: String {
-            switch self {
-            case .symmetric: return "Balanced"
-            case .leftEyeUntouched: return "Sharp left eye"
-            }
-        }
 
         /// The multiplier applied to d when sampling for an eye.
         ///
@@ -80,7 +67,7 @@ struct StereoTuning: Sendable, Equatable {
         }
     }
 
-    enum Eye: Int, Sendable, CaseIterable {
+    enum Eye: Int, Sendable {
         case left = 0
         case right = 1
     }

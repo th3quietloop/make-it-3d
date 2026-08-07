@@ -73,7 +73,10 @@ final class PairedFrameCompositor: NSObject, AVVideoCompositing, @unchecked Send
         }
 
         if let depth = request.sourceFrame(byTrackID: instruction.depthTrackID) {
-            instruction.sink.publish(depth, at: request.compositionTime)
+            // The colour buffer is published alongside the depth, because the
+            // colour buffer is the only key that cannot be wrong. It is the
+            // exact object the player will hand back.
+            instruction.sink.publish(depth: depth, color: color, at: request.compositionTime)
         } else {
             instruction.sink.recordMissingDepth()
         }
@@ -132,10 +135,25 @@ final class PairedFrameInstruction: NSObject, AVVideoCompositionInstructionProto
 /// display by a few frames and a seek can make it run backwards. Eight entries
 /// covers the lead comfortably and costs nothing.
 ///
-/// The lookup insists on an exact time match first and counts every time it has
-/// to settle for a near one. That counter is the point: a sink that quietly
-/// returned the nearest depth frame would make a one frame drift invisible,
-/// which is the failure this whole design exists to prevent.
+/// Three ways to find a frame's depth, tried in that order, and every one of
+/// them counted.
+///
+/// **By colour buffer.** The compositor stores the colour buffer it finished
+/// with next to the depth frame that belongs to it, and the player hands that
+/// same object back. Object identity cannot be off by a frame, so this is the
+/// only key here that is exact by construction rather than by argument.
+///
+/// **By exact time.** For anything the player did not hand back untouched.
+///
+/// **By nearest time, within half a frame.** Counted as a near match, and the
+/// gate treats a near match as a failure. It exists so a mispairing is visible
+/// rather than silently absent, because a sink that quietly returned the
+/// nearest depth frame would make a one frame drift impossible to detect, and
+/// that drift is the failure this whole design exists to prevent.
+///
+/// Keying by `itemTimeForDisplay` alone was measured doing exactly that: one
+/// frame in a few hundred paired to a neighbour and the picture carried the
+/// wrong frame's depth. The frame index strips caught it. Identity fixed it.
 final class DepthFrameSink: @unchecked Sendable {
 
     struct Match {
@@ -146,15 +164,25 @@ final class DepthFrameSink: @unchecked Sendable {
 
     struct Statistics: Sendable, Equatable {
         var published = 0
+        var identityMatches = 0
         var exactMatches = 0
         var nearMatches = 0
         var misses = 0
         var missingDepthFrames = 0
     }
 
+    private struct Entry {
+        let time: CMTime
+        let depth: CVPixelBuffer
+        /// The colour buffer's address, used only for identity. Never
+        /// dereferenced: the buffer itself is retained below so the address
+        /// cannot be reused by something else while the entry lives.
+        let colorIdentity: UnsafeMutableRawPointer
+        let color: CVPixelBuffer
+    }
+
     private let lock = NSLock()
-    private var times = [CMTime]()
-    private var buffers = [CVPixelBuffer]()
+    private var entries = [Entry]()
     private var statistics = Statistics()
     private let capacity = 8
 
@@ -163,15 +191,16 @@ final class DepthFrameSink: @unchecked Sendable {
     /// needs and no drift of a whole frame can hide inside.
     private let tolerance = CMTime(value: 1, timescale: 48)
 
-    func publish(_ buffer: CVPixelBuffer, at time: CMTime) {
+    func publish(depth: CVPixelBuffer, color: CVPixelBuffer, at time: CMTime) {
         lock.lock()
         defer { lock.unlock() }
-        times.append(time)
-        buffers.append(buffer)
-        if times.count > capacity {
-            times.removeFirst()
-            buffers.removeFirst()
-        }
+        entries.append(Entry(
+            time: time,
+            depth: depth,
+            colorIdentity: Unmanaged.passUnretained(color).toOpaque(),
+            color: color
+        ))
+        if entries.count > capacity { entries.removeFirst() }
         statistics.published += 1
     }
 
@@ -181,30 +210,65 @@ final class DepthFrameSink: @unchecked Sendable {
         statistics.missingDepthFrames += 1
     }
 
-    func depth(at time: CMTime) -> Match? {
+    /// The depth belonging to a colour frame the player just handed back.
+    func depth(forColor color: CVPixelBuffer, at time: CMTime) -> Match? {
         lock.lock()
         defer { lock.unlock() }
 
-        for (index, stored) in times.enumerated() where stored == time {
-            statistics.exactMatches += 1
-            return Match(buffer: buffers[index], time: stored, exact: true)
+        let identity = Unmanaged.passUnretained(color).toOpaque()
+        for entry in entries where entry.colorIdentity == identity {
+            statistics.identityMatches += 1
+            return Match(buffer: entry.depth, time: entry.time, exact: true)
         }
 
-        var bestIndex: Int?
+        for entry in entries where entry.time == time {
+            statistics.exactMatches += 1
+            return Match(buffer: entry.depth, time: entry.time, exact: true)
+        }
+
+        var best: Entry?
         var bestDistance = tolerance
-        for (index, stored) in times.enumerated() {
-            let distance = CMTimeAbsoluteValue(CMTimeSubtract(stored, time))
+        for entry in entries {
+            let distance = CMTimeAbsoluteValue(CMTimeSubtract(entry.time, time))
             if distance <= bestDistance {
                 bestDistance = distance
-                bestIndex = index
+                best = entry
             }
         }
-        guard let bestIndex else {
+        guard let best else {
             statistics.misses += 1
             return nil
         }
         statistics.nearMatches += 1
-        return Match(buffer: buffers[bestIndex], time: times[bestIndex], exact: false)
+        return Match(buffer: best.depth, time: best.time, exact: false)
+    }
+
+    /// The depth at a composition time, for callers reading through an asset
+    /// reader rather than a player and so holding no colour buffer to key on.
+    func depth(at time: CMTime) -> Match? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        for entry in entries where entry.time == time {
+            statistics.exactMatches += 1
+            return Match(buffer: entry.depth, time: entry.time, exact: true)
+        }
+
+        var best: Entry?
+        var bestDistance = tolerance
+        for entry in entries {
+            let distance = CMTimeAbsoluteValue(CMTimeSubtract(entry.time, time))
+            if distance <= bestDistance {
+                bestDistance = distance
+                best = entry
+            }
+        }
+        guard let best else {
+            statistics.misses += 1
+            return nil
+        }
+        statistics.nearMatches += 1
+        return Match(buffer: best.depth, time: best.time, exact: false)
     }
 
     var currentStatistics: Statistics {
@@ -218,8 +282,7 @@ final class DepthFrameSink: @unchecked Sendable {
     func flush() {
         lock.lock()
         defer { lock.unlock() }
-        times.removeAll(keepingCapacity: true)
-        buffers.removeAll(keepingCapacity: true)
+        entries.removeAll(keepingCapacity: true)
     }
 
     func resetStatistics() {
