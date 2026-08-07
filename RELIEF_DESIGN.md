@@ -121,6 +121,32 @@ Microcopy (plain human voice, no marketing):
 
 Purple or indigo anywhere, pure #000 or #FFF, glassmorphism, decorative gradients, indeterminate spinners during conversion, rainbow depth maps, emoji in UI, serif faces, drop shadows as separators, rounded-corner inflation (radius vocabulary is 6 for controls, 10 for panels and thumbnails, nothing larger).
 
+## Materials, and the glassmorphism line
+
+The original banned list said "glassmorphism". That was aimed at the 2021 trend:
+frosted cards floating on a saturated gradient, blur used as decoration. That
+ban stands.
+
+Native macOS vibrancy is a different thing and is now used deliberately. The
+sidebar takes `NSVisualEffectView` with the `.sidebar` material and behind
+window blending, because every macOS app with a sidebar does and a flat fill
+there is the loudest signal an app was not built for this platform. The
+inspector takes a within window material, as a parallel panel that does not
+block the flow. Toasts and the scrubber take the HUD material, because they
+genuinely float.
+
+Three rules keep it honest:
+
+- **The stage never takes material.** Depth is judged against a dead field, not
+  against the user's wallpaper. The stage stays #101114 and is the darkest
+  thing on screen.
+- **Material weight encodes hierarchy.** Heaviest on the structural region
+  (sidebar), lighter on things that float. Light translucent surfaces are never
+  stacked on each other.
+- **Every material has a solid fallback.** Reduce Transparency swaps in the
+  original flat fills; Increase Contrast adds a defined border. Translucency
+  without a fallback is an accessibility failure, not a style.
+
 ## Self-critique against the anchors
 
 - Job clarity 5: a stranger sees a video, a depth map toggle, and one Convert button.

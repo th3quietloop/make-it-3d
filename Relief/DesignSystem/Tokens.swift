@@ -55,6 +55,18 @@ enum Tokens {
         /// selected one.
         static let controlFillQuiet = panelRaised.opacity(0.5)
 
+        /// Secondary text sitting on a translucent surface.
+        ///
+        /// Flat grey works on a known flat fill. Over material the backdrop
+        /// moves, and 62% white starts dissolving into it, so vibrant contexts
+        /// get a higher value and lean on weight rather than opacity to sit
+        /// back.
+        static let textSecondaryVibrant = Color(hex: 0xF4F5F7).opacity(0.78)
+
+        /// A hairline that reads on glass. The 7% white divider disappears
+        /// against a material that is already partly light.
+        static let hairlineVibrant = Color.white.opacity(0.12)
+
         /// Depth map ramp: monochrome silver. Explicitly not turbo or viridis.
         /// The rainbow ramp is an AI demo tell and it is banned here.
         static let depthNear = Color(hex: 0xE8E9EC)
@@ -190,6 +202,22 @@ enum Tokens {
     enum Tracking {
         /// +0.4 on section labels.
         static let sectionLabel: CGFloat = 0.4
+
+        /// Tracking is size specific. Letters read too far apart as type grows,
+        /// so display sizes tighten; small text opens up slightly to stay
+        /// legible. One fixed value is wrong somewhere, which is why there is a
+        /// table rather than a constant.
+        ///
+        /// Roughly -0.02em at the top of the scale, easing through zero at body.
+        static func forSize(_ size: CGFloat) -> CGFloat {
+            switch size {
+            case TypeScale.headline...: return -0.56
+            case TypeScale.readout..<TypeScale.headline: return -0.30
+            case TypeScale.rowTitle..<TypeScale.readout: return -0.20
+            case TypeScale.body..<TypeScale.rowTitle: return 0
+            default: return 0.10
+            }
+        }
     }
 
     enum LineSpacing {
@@ -197,6 +225,9 @@ enum Tokens {
         static func labels(_ size: CGFloat) -> CGFloat { size * 0.2 }
         /// Line height 1.45 on the empty state supporting sentence.
         static func supporting(_ size: CGFloat) -> CGFloat { size * 0.45 }
+        /// Leading tracks size inversely. Display type set at body leading
+        /// looks like a paragraph that lost its way, so it tightens to ~1.05.
+        static func display(_ size: CGFloat) -> CGFloat { size * 0.05 }
     }
 
     // MARK: Elevation
@@ -207,6 +238,14 @@ enum Tokens {
         static let scrubberRadius: CGFloat = 8
         static let scrubberY: CGFloat = 2
         static let scrubberColor = Color.black.opacity(0.24)
+
+        /// Floating glass. Bigger surfaces read as thicker, so these sit deeper
+        /// than the scrubber's, and lift further when the pointer approaches.
+        static let floatingColor = Color.black.opacity(0.38)
+        static let floatingRadius: CGFloat = 16
+        static let floatingY: CGFloat = 6
+        static let floatingRadiusRaised: CGFloat = 22
+        static let floatingYRaised: CGFloat = 10
     }
 
     // MARK: Motion
@@ -242,6 +281,11 @@ enum Tokens {
         /// to the target first.
         static var panelSpring: Animation {
             .spring(response: inspectorCollapse, dampingFraction: 1.0)
+        }
+        /// The stereo fuse. Critically damped: the two copies come back
+        /// together and settle without arguing about it.
+        static var fuseSpring: Animation {
+            .spring(response: stereoFuse + 0.15, dampingFraction: 1.0)
         }
         static var toastSpring: Animation {
             // A little bounce, because a toast arrives rather than appears.

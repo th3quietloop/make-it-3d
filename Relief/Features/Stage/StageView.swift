@@ -40,7 +40,7 @@ struct StageView: View {
             .overlay(
                 // Drag over wake: the stage border comes up to meet the file
                 // rather than the layout shifting under the cursor.
-                RoundedRectangle(cornerRadius: Tokens.Radius.panel)
+                RoundedRectangle(cornerRadius: Tokens.Radius.panel, style: .continuous)
                     .strokeBorder(
                         isTargeted ? Tokens.Palette.accent : .clear,
                         lineWidth: Tokens.Layout.focusRingWidth
@@ -189,14 +189,16 @@ struct StageView: View {
         }
         .padding(.horizontal, Tokens.Space.m)
         .padding(.vertical, Tokens.Space.s)
-        .background(
-            RoundedRectangle(cornerRadius: Tokens.Radius.panel)
-                .fill(Tokens.Palette.panel)
-                .shadow(
-                    color: Tokens.Shadow.scrubberColor,
-                    radius: Tokens.Shadow.scrubberRadius,
-                    y: Tokens.Shadow.scrubberY
-                )
+        .surfaceMaterial(.floating)
+        .clipShape(.rect(cornerRadius: Tokens.Radius.panel, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Tokens.Radius.panel, style: .continuous)
+                .strokeBorder(Tokens.Palette.hairlineVibrant, lineWidth: Tokens.Layout.hairlineWidth)
+        )
+        .shadow(
+            color: Tokens.Shadow.scrubberColor,
+            radius: Tokens.Shadow.scrubberRadius,
+            y: Tokens.Shadow.scrubberY
         )
         .padding(Tokens.Space.m)
     }

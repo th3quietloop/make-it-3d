@@ -41,14 +41,16 @@ struct QueueSidebarView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, Tokens.Space.l)
             }
+            // Rows pass under the header rather than stopping at a rule.
+            .scrollEdgeFade(top: true, bottom: false)
 
             Spacer(minLength: 0)
         }
         .frame(minWidth: Tokens.Layout.sidebarMinWidth)
-        .background(Tokens.Palette.panel)
+        .surfaceMaterial(.sidebar)
         .overlay(
             // Drag over wake, in the populated layout as well as the empty one.
-            RoundedRectangle(cornerRadius: Tokens.Radius.panel)
+            RoundedRectangle(cornerRadius: Tokens.Radius.panel, style: .continuous)
                 .strokeBorder(
                     isTargeted ? Tokens.Palette.accent : .clear,
                     lineWidth: Tokens.Layout.focusRingWidth
@@ -137,7 +139,7 @@ struct QueueRow: View {
     private func runStereoFuse() {
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         fuseAmount = 1
-        withAnimation(.easeOut(duration: Tokens.Motion.stereoFuse)) {
+        withAnimation(Tokens.Motion.fuseSpring) {
             fuseAmount = 0
         }
     }
@@ -150,7 +152,7 @@ struct QueueRow: View {
         case .probing:
             // A skeleton, not the word "Reading". Text that says it is loading
             // is a spinner in prose.
-            RoundedRectangle(cornerRadius: Tokens.Radius.control)
+            RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
                 .fill(Tokens.Palette.panelRaised)
                 .frame(width: Tokens.Layout.durationColumn, height: Tokens.TypeScale.caption)
                 .accessibilityLabel("Reading file")
@@ -203,7 +205,7 @@ struct QueueRow: View {
     @ViewBuilder
     private var thumbnail: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: Tokens.Radius.panel)
+            RoundedRectangle(cornerRadius: Tokens.Radius.panel, style: .continuous)
                 .fill(Tokens.Palette.panelRaised)
 
             if let image = conversion.thumbnail {
@@ -218,7 +220,7 @@ struct QueueRow: View {
                         height: Tokens.Layout.thumbnailSize
                     )
                     .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.panel))
+                    .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.panel, style: .continuous))
                     // The thumbnail dims while its row converts.
                     .opacity(conversion.status.isConverting ? Tokens.StateShift.dimmed : 1)
             }

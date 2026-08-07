@@ -4,6 +4,7 @@ import AppKit
 @main
 struct ReliefApp: App {
     @State private var model = AppModel()
+    @State private var appearance = AppearanceSettings()
     @NSApplicationDelegateAdaptor(ReliefAppDelegate.self) private var appDelegate
 
     init() {
@@ -38,6 +39,7 @@ struct ReliefApp: App {
             RootView(model: model)
                 .frame(minWidth: 960, minHeight: 600)
                 .preferredColorScheme(.dark)
+                .environment(appearance)
                 .onAppear { appDelegate.model = model }
         }
         .windowToolbarStyle(.unified)
@@ -46,6 +48,7 @@ struct ReliefApp: App {
         Settings {
             SettingsView(model: model)
                 .preferredColorScheme(.dark)
+                .environment(appearance)
         }
     }
 

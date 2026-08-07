@@ -14,8 +14,12 @@ struct EmptyStateView: View {
         VStack(spacing: Tokens.Space.s) {
             Text("Drop a movie here.")
                 .font(Tokens.Font.headline)
+                // Display type wants negative tracking and tight leading. At
+                // 28pt, default spacing reads as letters drifting apart and a
+                // line box built for a paragraph.
+                .tracking(Tokens.Tracking.forSize(Tokens.TypeScale.headline))
                 .foregroundStyle(Tokens.Palette.textPrimary)
-                .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.headline))
+                .lineSpacing(Tokens.LineSpacing.display(Tokens.TypeScale.headline))
 
             Text("Relief reads its depth and writes a spatial video your Vision Pro plays natively.")
                 .font(Tokens.Font.body)
@@ -27,6 +31,7 @@ struct EmptyStateView: View {
             HStack(spacing: Tokens.Space.l) {
                 Button("Choose a file", action: onBrowse)
                     .buttonStyle(.plain)
+                    .pressable()
                     .foregroundStyle(
                         isFirstRun ? Tokens.Palette.textSecondary : Tokens.Palette.accent
                     )
@@ -39,6 +44,7 @@ struct EmptyStateView: View {
                 // the depth.
                 Button(isFirstRun ? "Show me how it works" : "Try a sample clip", action: onSample)
                     .buttonStyle(.plain)
+                    .pressable()
                     .foregroundStyle(
                         isFirstRun ? Tokens.Palette.accent : Tokens.Palette.textSecondary
                     )
@@ -53,7 +59,7 @@ struct EmptyStateView: View {
         .overlay(
             // The drag over wake state: the stage border comes up to meet the
             // file rather than the layout shifting under the cursor.
-            RoundedRectangle(cornerRadius: Tokens.Radius.panel)
+            RoundedRectangle(cornerRadius: Tokens.Radius.panel, style: .continuous)
                 .strokeBorder(
                     isTargeted ? Tokens.Palette.accent : Tokens.Palette.hairline,
                     lineWidth: isTargeted ? Tokens.Layout.focusRingWidth : Tokens.Layout.hairlineWidth

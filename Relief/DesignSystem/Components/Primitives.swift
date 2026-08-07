@@ -92,19 +92,23 @@ struct ConvertButton: View {
                         .foregroundStyle(labelColor)
                 }
                 .frame(height: Tokens.Layout.minTarget)
-                .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.control))
-                .contentShape(RoundedRectangle(cornerRadius: Tokens.Radius.control))
+                .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous))
             }
             .buttonStyle(.plain)
             .disabled(isDisabled)
             .focused($isFocused)
             .offset(x: shakeOffset)
+            // Outset and soft, the way the system draws focus, rather than a
+            // hard stroke sitting on the shape's own edge.
             .overlay(
-                RoundedRectangle(cornerRadius: Tokens.Radius.control)
+                RoundedRectangle(cornerRadius: Tokens.Radius.control + 2, style: .continuous)
                     .strokeBorder(
                         isFocused ? Tokens.Palette.focusRing : .clear,
-                        lineWidth: Tokens.Layout.focusRingWidth
+                        lineWidth: Tokens.Layout.focusRingWidth + 1
                     )
+                    .padding(-2)
+                    .blur(radius: isFocused ? 0.5 : 0)
             )
             .onHover { isHovering = $0 }
             .onLongPressGesture(minimumDuration: 0, pressing: { isPressed = $0 }, perform: {})
@@ -181,15 +185,15 @@ struct PrimaryActionSurface: ViewModifier {
         content
             .frame(maxWidth: .infinity)
             .frame(height: Tokens.Layout.minTarget)
-            .background(fill, in: RoundedRectangle(cornerRadius: Tokens.Radius.control))
+            .background(fill, in: RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: Tokens.Radius.control)
+                RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
                     .strokeBorder(
                         isFocused ? Tokens.Palette.focusRing : .clear,
                         lineWidth: Tokens.Layout.focusRingWidth
                     )
             )
-            .contentShape(RoundedRectangle(cornerRadius: Tokens.Radius.control))
+            .contentShape(RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous))
     }
 }
 
@@ -247,7 +251,7 @@ struct Chip: View {
             .foregroundStyle(foreground)
             .padding(.horizontal, Tokens.Space.xs)
             .padding(.vertical, Tokens.Space.xxs)
-            .background(background, in: RoundedRectangle(cornerRadius: Tokens.Radius.control))
+            .background(background, in: RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous))
     }
 }
 

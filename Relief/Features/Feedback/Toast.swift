@@ -121,10 +121,14 @@ struct ToastStack: View {
         VStack(alignment: .leading, spacing: Tokens.Space.xs) {
             ForEach(center.toasts) { toast in
                 ToastView(toast: toast) { center.dismiss(toast.id) }
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .bottom).combined(with: .opacity),
-                        removal: .opacity
-                    ))
+                    // Symmetric. What arrives from below leaves the same way,
+                    // and the scale makes it read as a material arriving
+                    // rather than a rectangle being faded in.
+                    .transition(
+                        .move(edge: .bottom)
+                            .combined(with: .opacity)
+                            .combined(with: .scale(scale: 0.96, anchor: .bottomLeading))
+                    )
             }
         }
         .animation(Tokens.Motion.toastSpring, value: center.toasts)
@@ -140,34 +144,56 @@ struct ToastView: View {
 
     @State private var isHovering = false
 
-    private var accentColor: Color {
+    private var tint: Color {
         switch toast.tone {
-        case .info: return Tokens.Palette.textSecondary
+        case .info: return Tokens.Palette.textSecondaryVibrant
         case .success: return Tokens.Palette.accent
-        case .failure: return Tokens.Palette.error
+        case .failure: return Tokens.Palette.errorText
         case .guidance: return Tokens.Palette.accent
+        }
+    }
+
+    /// Tone lives in the glyph.
+    ///
+    /// It used to live in a coloured bar down the left edge. That is the
+    /// Bootstrap alert component, and Apple has never shipped it: Notification
+    /// Center, the Xcode issue navigator, Mail banners and System Settings all
+    /// carry status with a tinted SF Symbol against a material, which reads as
+    /// part of the system rather than as a component someone imported.
+    private var symbol: String {
+        switch toast.tone {
+        case .info: return "info.circle.fill"
+        case .success: return "checkmark.circle.fill"
+        case .failure: return "exclamationmark.triangle.fill"
+        case .guidance: return "lightbulb.fill"
         }
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: Tokens.Space.s) {
-            // A colour bar rather than an icon: it carries the tone without
-            // adding a glyph vocabulary the rest of the app does not use.
-            RoundedRectangle(cornerRadius: Tokens.Layout.hairlineWidth)
-                .fill(accentColor)
-                .frame(width: Tokens.Layout.selectionBarWidth)
+            Image(systemName: symbol)
+                .font(.system(size: Tokens.TypeScale.rowTitle, weight: .medium))
+                .foregroundStyle(tint)
+                // Optically aligned to the title's cap height rather than the
+                // top of its line box.
+                .alignmentGuide(.top) { $0[.top] - 1 }
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
                 Text(toast.title)
                     .font(Tokens.Font.bodyMedium)
+                    .tracking(Tokens.Tracking.forSize(Tokens.TypeScale.body))
                     .foregroundStyle(Tokens.Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let detail = toast.detail {
                     Text(detail)
                         .font(Tokens.Font.caption)
-                        .foregroundStyle(Tokens.Palette.textSecondary)
+                        // Over glass the backdrop moves, so secondary text
+                        // leans on a higher value than the flat surface uses.
+                        .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
                         .fixedSize(horizontal: false, vertical: true)
+                        .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
                 }
 
                 if let label = toast.actionLabel, let action = toast.action {
@@ -179,6 +205,7 @@ struct ToastView: View {
                     .font(Tokens.Font.bodyMedium)
                     .foregroundStyle(Tokens.Palette.accent)
                     .padding(.top, Tokens.Space.xxs)
+                    .pressable()
                 }
             }
 
@@ -194,6 +221,7 @@ struct ToastView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .pressable(scale: 0.9)
             .accessibilityLabel("Dismiss")
         }
         // Hug the content vertically. The tone bar has no intrinsic height, so
@@ -204,14 +232,24 @@ struct ToastView: View {
         .padding(.leading, Tokens.Space.s)
         .padding(.trailing, Tokens.Space.xxs)
         .frame(width: Tokens.Layout.toastWidth, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Tokens.Radius.panel)
-                .fill(Tokens.Palette.panelRaised)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Tokens.Radius.panel)
-                        .strokeBorder(Tokens.Palette.hairline, lineWidth: Tokens.Layout.hairlineWidth)
-                )
+        .surfaceMaterial(.floating)
+        // Continuous curvature. Circular corners are the giveaway that a shape
+        // was drawn rather than designed for this platform.
+        .clipShape(.rect(cornerRadius: Tokens.Radius.panel, style: .continuous))
+        .overlay(
+            // A bright top edge is light catching the material. Without it the
+            // glass has no thickness.
+            RoundedRectangle(cornerRadius: Tokens.Radius.panel, style: .continuous)
+                .strokeBorder(Tokens.Palette.hairlineVibrant, lineWidth: Tokens.Layout.hairlineWidth)
         )
+        // A floating surface casts a real shadow, and lifts a little when the
+        // pointer comes near it.
+        .shadow(
+            color: Tokens.Shadow.floatingColor,
+            radius: isHovering ? Tokens.Shadow.floatingRadiusRaised : Tokens.Shadow.floatingRadius,
+            y: isHovering ? Tokens.Shadow.floatingYRaised : Tokens.Shadow.floatingY
+        )
+        .animation(Tokens.Motion.panelSpring, value: isHovering)
         .onHover { isHovering = $0 }
         .accessibilityElement(children: .combine)
     }

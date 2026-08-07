@@ -111,8 +111,9 @@ struct DepthGauge: View {
                 Text(reading.verdict.label)
                     .font(Tokens.Font.bodyMedium)
                     .foregroundStyle(
-                        isOverBudget ? Tokens.Palette.error : Tokens.Palette.accent
+                        isOverBudget ? Tokens.Palette.errorText : Tokens.Palette.accent
                     )
+                    .contentTransition(.numericText())
             }
 
             GeometryReader { geometry in
@@ -124,10 +125,12 @@ struct DepthGauge: View {
                         Capsule().fill(Tokens.Palette.error.opacity(0.28))
                     }
 
-                    // This frame.
+                    // This frame. It settles into place rather than jumping,
+                    // so a slider drag reads as one continuous movement.
                     Capsule()
-                        .fill(isOverBudget ? Tokens.Palette.error : Tokens.Palette.accent)
+                        .fill(isOverBudget ? Tokens.Palette.errorText : Tokens.Palette.accent)
                         .frame(width: Tokens.Layout.gaugeMarker)
+                        .animation(Tokens.Motion.panelSpring, value: position)
                         .offset(
                             x: min(
                                 max(geometry.size.width * position - Tokens.Layout.gaugeMarker / 2, 0),
@@ -148,7 +151,7 @@ struct DepthGauge: View {
 
             Text(reading.verdict.explanation)
                 .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.textSecondary)
+                .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
                 .fixedSize(horizontal: false, vertical: true)
                 .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
         }

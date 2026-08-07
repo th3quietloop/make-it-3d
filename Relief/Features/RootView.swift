@@ -21,7 +21,7 @@ struct RootView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Tokens.Palette.stage)
+        .background(WindowVibrancy())
         .overlay(alignment: .bottomLeading) {
             // Toasts sit over the stage, above the scrubber, so they never
             // cover the picture being judged.
@@ -60,6 +60,9 @@ struct RootView: View {
                 }
             }
             .frame(maxWidth: .infinity)
+            // The stage is the one region that stays opaque. Depth is judged
+            // against a dead field, not against the desktop.
+            .background(Tokens.Palette.stage)
 
             if model.inspectorVisible, let selection = model.selection {
                 Hairline(axis: .vertical)

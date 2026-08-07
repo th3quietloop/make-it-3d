@@ -31,6 +31,8 @@ struct InspectorView: View {
                 }
                 .padding(Tokens.Space.m)
             }
+            // Controls fade under the verdict rather than hitting a divider.
+            .scrollEdgeFade()
 
             Spacer(minLength: 0)
 
@@ -49,7 +51,7 @@ struct InspectorView: View {
                 .padding(Tokens.Space.m)
         }
         .frame(width: Tokens.Layout.inspectorWidth)
-        .background(Tokens.Palette.panel)
+        .surfaceMaterial(.panel)
     }
 
     // MARK: Actions
@@ -64,11 +66,13 @@ struct InspectorView: View {
                 HStack(spacing: Tokens.Space.m) {
                     Button("Show file") { model.reveal(url) }
                         .buttonStyle(.plain)
-                        .foregroundStyle(Tokens.Palette.textSecondary)
+                        .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+                        .pressable()
                         .help("Reveal the converted file in the Finder.")
                     Button("Convert again") { model.reconvert(conversion) }
                         .buttonStyle(.plain)
-                        .foregroundStyle(Tokens.Palette.textSecondary)
+                        .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+                        .pressable()
                         .help("Run it through again and keep both files.")
                 }
                 .font(Tokens.Font.body)
@@ -130,7 +134,7 @@ struct InspectorView: View {
             }
             .padding(Tokens.Space.xxs / 2)
             .background(
-                RoundedRectangle(cornerRadius: Tokens.Radius.control)
+                RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
                     .fill(Tokens.Palette.controlFillQuiet)
             )
 
@@ -487,12 +491,13 @@ struct StrengthChip: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: Tokens.Layout.minTarget)
                 .background(
-                    RoundedRectangle(cornerRadius: Tokens.Radius.control)
+                    RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
                         .fill(fill)
                 )
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .pressable()
         .onHover { isHovering = $0 }
         .help(strength.explanation)
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
