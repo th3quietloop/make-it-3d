@@ -22,6 +22,9 @@ struct MakeIt3DVisionApp: App {
                             // window, so the space opens as soon as there is
                             // something to put in it.
                             _ = await openImmersiveSpace(id: "theatre")
+                            if SelfTest.isRequested {
+                                await SelfTest.run(model: model)
+                            }
                         }
                 case .failed(let message):
                     StartupFailureView(message: message)

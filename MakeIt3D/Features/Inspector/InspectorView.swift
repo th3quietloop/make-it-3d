@@ -1,16 +1,27 @@
 import SwiftUI
 
-/// Parameters, on the right, in the Final Cut dialect.
+/// One decision, and a drawer for everyone else.
 ///
-/// The language here is deliberately not the engine's language. The engine
-/// thinks in convergence, disparity, overscan, and baseline. A person sitting
-/// down to convert a home video thinks in "how much depth" and "does this look
-/// right". Every control is named for what it does to the picture, and the
-/// terms of art live in tooltips for anyone who wants them.
+/// This pane used to show twenty one things at rest: two named controls, a
+/// gauge, a nested disclosure, and the captions each of them needed in order to
+/// be understandable. Every one of those was a question put to someone who came
+/// here to watch a film, and the app can answer all of them better than a person
+/// can by eye. Now it shows one decision, its result, a way in for anyone who
+/// disagrees, and the commit.
+///
+/// The evidence did not disappear, it moved. The shot strip under the picture
+/// says what the depth is doing across the film, in the place where you are
+/// already looking. A panel is a worse place to prove something than the picture
+/// itself.
+///
+/// The engine's language never appears. It thinks in convergence, disparity,
+/// overscan and baseline; the terms of art live in tooltips for anyone who wants
+/// them.
 struct InspectorView: View {
     @Bindable var model: AppModel
     let conversion: Conversion
 
+    @State private var showCustom = false
     @State private var showAdvanced = false
     @State private var showPlayback = false
 
@@ -26,26 +37,13 @@ struct InspectorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Tokens.Space.l) {
                     autoSection
-                    strengthSection
-                    balanceSection
-                    advancedSection
+                    customSection
                 }
                 .padding(Tokens.Space.m)
             }
-            // Controls fade under the verdict rather than hitting a divider.
             .scrollEdgeFade()
 
             Spacer(minLength: 0)
-
-            // The verdict sits directly above the commit, so the screen reads
-            // top to bottom as judge, then convert.
-            if let reading = model.preview.reading {
-                VStack(alignment: .leading, spacing: 0) {
-                    Hairline()
-                    DepthGauge(reading: reading)
-                        .padding(Tokens.Space.m)
-                }
-            }
 
             Hairline()
             actionStack
@@ -53,6 +51,54 @@ struct InspectorView: View {
         }
         .frame(width: Tokens.Layout.inspectorWidth)
         .surfaceMaterial(.panel)
+    }
+
+    // MARK: Custom
+
+    /// Everything that used to be at the top level, behind one door.
+    ///
+    /// One door, not two. Strength, balance and the old More controls list were
+    /// three separate levels of disclosure, which is a filing cabinet rather
+    /// than a design. Anyone opening this has already decided they disagree with
+    /// Auto, and someone who disagrees wants the whole workbench, not another
+    /// chevron.
+    private var customSection: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.s) {
+            Button {
+                withAnimation(Tokens.Motion.panelSpring) { showCustom.toggle() }
+            } label: {
+                HStack(spacing: Tokens.Space.xs) {
+                    SectionLabel(text: "Custom")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Palette.textTertiary)
+                        .rotationEffect(.degrees(showCustom ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+                .frame(minHeight: Tokens.Layout.minTarget)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Custom depth controls")
+            .accessibilityValue(showCustom ? "Expanded" : "Collapsed")
+
+            if showCustom {
+                VStack(alignment: .leading, spacing: Tokens.Space.l) {
+                    strengthSection
+                    balanceSection
+
+                    // The gauge belongs to the sliders, not to the panel. It is
+                    // feedback for a control, and with the controls hidden it
+                    // was a readout of a decision the user did not make.
+                    if let reading = model.preview.reading {
+                        DepthGauge(reading: reading)
+                    }
+
+                    advancedSection
+                }
+                .transition(.opacity)
+            }
+        }
     }
 
     // MARK: Auto
@@ -64,55 +110,87 @@ struct InspectorView: View {
     /// press Auto, then adjust if you disagree, not fiddle with dials and
     /// discover afterwards that the app could have done it.
     private var autoSection: some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
+        VStack(alignment: .leading, spacing: Tokens.Space.m) {
             if let progress = conversion.planningProgress {
-                HStack(spacing: Tokens.Space.s) {
-                    ProgressView(value: progress)
-                        .tint(Tokens.Palette.accent)
-                    Text("\(Int(progress * 100))%")
-                        .font(Tokens.Font.monoCaption)
-                        .foregroundStyle(Tokens.Palette.textSecondary)
-                        .contentTransition(.numericText())
-                }
-                Text("Looking at every shot in the film.")
-                    .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+                working(progress)
+            } else if let plan = conversion.shotPlan {
+                verdict(plan)
             } else {
-                Button {
-                    model.autoTune(conversion)
-                } label: {
-                    HStack(spacing: Tokens.Space.xs) {
-                        Image(systemName: "wand.and.stars")
-                        Text(conversion.shotPlan == nil ? "Set the depth for me" : "Tune it again")
-                    }
-                    .font(Tokens.Font.bodyMedium)
-                    .frame(maxWidth: .infinity)
-                    .foregroundStyle(Tokens.Palette.accent)
-                    .padding(.vertical, Tokens.Space.xs)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .pressable()
-                .overlay(
-                    RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
-                        .strokeBorder(Tokens.Palette.accent.opacity(0.4),
-                                      lineWidth: Tokens.Layout.hairlineWidth)
-                )
-                .disabled(conversion.probe == nil)
-                .help("Finds every cut and works out the best depth for each shot on its own.")
-
-                if let plan = conversion.shotPlan {
-                    Text(plan.summary)
-                        .font(Tokens.Font.caption)
-                        .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text("One setting for a whole film is one exposure for a whole film. This gives every shot its own.")
-                        .font(Tokens.Font.caption)
-                        .foregroundStyle(Tokens.Palette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                invitation
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(Tokens.Motion.panelSpring, value: conversion.shotPlan)
+        .animation(Tokens.Motion.panelSpring, value: conversion.planningProgress != nil)
+    }
+
+    /// Nothing decided yet. One object, and room around it.
+    private var invitation: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.s) {
+            Button {
+                model.autoTune(conversion)
+            } label: {
+                HStack(spacing: Tokens.Space.xs) {
+                    Image(systemName: "wand.and.stars")
+                    Text("Set the depth for me")
+                }
+                .font(Tokens.Font.bodyMedium)
+                .foregroundStyle(Tokens.Palette.stage)
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+            .modifier(PrimaryActionSurface(isHovering: false, isPressed: false, isFocused: false))
+            .pressable()
+            .disabled(conversion.probe == nil)
+            .help("Finds every cut and works out the best depth for each shot on its own.")
+
+            Text("Finds every cut and picks the depth for each shot on its own.")
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
+        }
+    }
+
+    /// Thinking. The count is the interesting part, so it is the big thing.
+    private func working(_ progress: Double) -> some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
+            Text("\(Int(progress * 100))%")
+                .font(Tokens.Font.monoReadout)
+                .foregroundStyle(Tokens.Palette.textPrimary)
+                .contentTransition(.numericText())
+            ProgressView(value: progress)
+                .tint(Tokens.Palette.accent)
+            Text("Looking at every shot in the film.")
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+        }
+    }
+
+    /// Decided. This replaces the gauge: one sentence about the footage, one
+    /// about comfort, and a quiet way to run it again.
+    private func verdict(_ plan: ShotPlan) -> some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
+            HStack(spacing: Tokens.Space.xs) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Tokens.Palette.accent)
+                Text(plan.shots.count == 1 ? "Depth set" : "Depth set for \(plan.shots.count) shots")
+                    .font(Tokens.Font.bodyMedium)
+                    .foregroundStyle(Tokens.Palette.textPrimary)
+            }
+
+            Text(plan.comfortNote)
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
+
+            Button("Do it again") { model.autoTune(conversion) }
+                .buttonStyle(.plain)
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.accent)
+                .pressable()
+                .frame(minHeight: Tokens.Layout.minTarget, alignment: .leading)
         }
     }
 

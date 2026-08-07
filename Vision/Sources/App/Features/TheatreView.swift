@@ -21,7 +21,6 @@ struct TheatreView: View {
     @State private var screen = ModelEntity()
     @State private var surround = ModelEntity()
     @State private var updates: EventSubscription?
-    @State private var materialFailure: String?
 
     var body: some View {
         RealityView { content in
@@ -44,15 +43,6 @@ struct TheatreView: View {
         }
         .onChange(of: model.plainPlayer) { _, _ in
             Task { await buildScreen() }
-        }
-        .overlay(alignment: .bottom) {
-            if let materialFailure {
-                Text(materialFailure)
-                    .font(VisionTokens.Font.body)
-                    .foregroundStyle(VisionTokens.Palette.error)
-                    .padding(VisionTokens.Space.m)
-                    .glassBackgroundEffect()
-            }
         }
     }
 
@@ -80,7 +70,7 @@ struct TheatreView: View {
             var component = VideoPlayerComponent(avPlayer: player)
             component.desiredViewingMode = .stereo
             screen.components.set(component)
-            materialFailure = nil
+            model.recordScreenMaterial(.nativeSpatialVideo)
             return
         }
         screen.components.remove(VideoPlayerComponent.self)
@@ -90,7 +80,7 @@ struct TheatreView: View {
         do {
             let material = try await ScreenMaterial.perEye(textures: eyes)
             screen.model?.materials = [material]
-            materialFailure = nil
+            model.recordScreenMaterial(.perEye)
         } catch {
             // The per eye material is the only part of the picture that is not
             // plain Metal, so it is the only part that can fail on a system
@@ -98,9 +88,7 @@ struct TheatreView: View {
             // both eyes keeps the film watchable and says so, which beats a
             // black screen and a log line nobody reads.
             screen.model?.materials = [ScreenMaterial.singleEye(texture: eyes.left)]
-            materialFailure = """
-                Showing the left eye to both eyes. \(error.localizedDescription)
-                """
+            model.recordScreenMaterial(.singleEye(reason: error.localizedDescription))
         }
     }
 

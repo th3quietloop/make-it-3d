@@ -58,6 +58,31 @@ final class PlayerModel {
     private(set) var indexMismatches = 0
     private(set) var indexFramesChecked = 0
 
+    /// What the screen is actually made of. Set by the view that builds it,
+    /// held here so the measurements panel can say which of the two real states
+    /// the app is in rather than leaving it to be inferred from the picture.
+    enum ScreenMaterialStatus: Equatable {
+        case notBuilt
+        case perEye
+        case singleEye(reason: String)
+        case nativeSpatialVideo
+
+        var summary: String {
+            switch self {
+            case .notBuilt: return "not built yet"
+            case .perEye: return "per eye, camera index switch"
+            case .singleEye(let reason): return "left eye to both eyes. \(reason)"
+            case .nativeSpatialVideo: return "RealityKit MV-HEVC playback"
+            }
+        }
+    }
+
+    private(set) var screenMaterial: ScreenMaterialStatus = .notBuilt
+
+    func recordScreenMaterial(_ status: ScreenMaterialStatus) {
+        screenMaterial = status
+    }
+
     // MARK: Engine
 
     private let device: MTLDevice
@@ -230,6 +255,15 @@ final class PlayerModel {
         followsSuggestions = true
         if let shot { tuning = tuning.applying(shot) }
         needsRerender = true
+    }
+
+    /// Starts the pairing counters over, so a reading covers a chosen stretch
+    /// rather than everything since the file opened.
+    func resetPairing() {
+        playback?.resetPairingStatistics()
+        pairing = DepthFrameSink.Statistics()
+        indexMismatches = 0
+        indexFramesChecked = 0
     }
 
     private func takeOver() {

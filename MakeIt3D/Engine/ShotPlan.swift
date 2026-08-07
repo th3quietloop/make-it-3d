@@ -48,6 +48,34 @@ struct ShotPlan: Equatable, Sendable {
         if flat == 0 { return "\(shots.count) shots, each tuned on its own." }
         return "\(shots.count) shots, each tuned on its own. \(flat) with little real depth."
     }
+
+    /// The line that replaced the depth gauge.
+    ///
+    /// The gauge answered "is this comfortable" with a bar and five verdicts,
+    /// which is a lot of furniture for a yes. This says the same thing in a
+    /// sentence, and unlike the gauge it speaks about the whole film rather
+    /// than whichever frame the playhead happens to be parked on.
+    var comfortNote: String {
+        guard !shots.isEmpty else { return "Nothing to measure." }
+
+        let flat = shots.filter { $0.settings.confidence < 0.12 }
+        let strong = shots.filter { $0.settings.predictedLoad > 1.0 }
+
+        if !strong.isEmpty {
+            return strong.count == shots.count
+                ? "Strong throughout. Fine for a short clip, tiring for a film."
+                : "\(strong.count) of \(shots.count) shots run strong. Comfortable for a clip, less so for a film."
+        }
+        if flat.isEmpty {
+            return shots.count == 1
+                ? "Comfortable to sit with."
+                : "Comfortable to sit with, all the way through."
+        }
+        if flat.count == shots.count {
+            return "There is barely any real depth in this footage. It will convert, but it will stay subtle."
+        }
+        return "Comfortable throughout. \(flat.count) of \(shots.count) shots have little real depth, so those stay subtle."
+    }
 }
 
 /// Builds a ShotPlan by sampling a file.
