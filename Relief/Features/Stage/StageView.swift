@@ -8,8 +8,6 @@ struct StageView: View {
     let conversion: Conversion
     let isTargeted: Bool
 
-    @AppStorage("hasSeenWiggleHint") private var hasSeenWiggleHint = false
-
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
@@ -50,10 +48,6 @@ struct StageView: View {
                     .padding(Tokens.Space.xs)
             )
             .animation(Tokens.Motion.previewCrossfadeAnimation, value: isTargeted)
-
-            if model.previewMode == .wiggle && !hasSeenWiggleHint {
-                wiggleHint
-            }
 
             scrubber
         }
@@ -155,21 +149,6 @@ struct StageView: View {
             .padding(Tokens.Space.m)
             Spacer()
         }
-    }
-
-    private var wiggleHint: some View {
-        HStack(spacing: Tokens.Space.xs) {
-            Text("If the wiggle looks wrong, the export will too. Tune Depth strength until it reads.")
-                .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.textSecondary)
-            Button("Got it") { hasSeenWiggleHint = true }
-                .buttonStyle(.plain)
-                .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.accent)
-            Spacer()
-        }
-        .padding(.horizontal, Tokens.Space.m)
-        .padding(.bottom, Tokens.Space.xs)
     }
 
     // MARK: Scrubber

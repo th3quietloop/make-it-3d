@@ -13,6 +13,9 @@ struct Toast: Identifiable, Equatable {
         case success
         /// Something the user asked for did not happen.
         case failure
+        /// A first run nudge. Stays until acknowledged, because a lesson that
+        /// times out before it is read was not taught.
+        case guidance
     }
 
     let id = UUID()
@@ -48,7 +51,9 @@ final class ToastCenter {
             toasts.removeFirst(toasts.count - maximumVisible)
         }
 
-        guard toast.tone != .failure else { return }
+        // Failures and guidance both stay put. A message you missed is a
+        // message that failed.
+        guard toast.tone != .failure, toast.tone != .guidance else { return }
         let id = toast.id
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(Tokens.Motion.toastDwell))
@@ -84,6 +89,22 @@ final class ToastCenter {
 
     func failure(_ title: String, detail: String? = nil) {
         show(Toast(tone: .failure, title: title, detail: detail))
+    }
+
+    /// Guidance is exclusive. Two lessons on screen at once is not twice the
+    /// teaching, it is a wall of text nobody reads, so a new one replaces
+    /// whatever was being taught before.
+    func guidance(
+        _ title: String,
+        detail: String? = nil,
+        actionLabel: String? = nil,
+        action: (@MainActor () -> Void)? = nil
+    ) {
+        toasts.removeAll { $0.tone == .guidance }
+        show(Toast(
+            tone: .guidance, title: title, detail: detail,
+            actionLabel: actionLabel, action: action
+        ))
     }
 }
 
@@ -124,6 +145,7 @@ struct ToastView: View {
         case .info: return Tokens.Palette.textSecondary
         case .success: return Tokens.Palette.accent
         case .failure: return Tokens.Palette.error
+        case .guidance: return Tokens.Palette.accent
         }
     }
 

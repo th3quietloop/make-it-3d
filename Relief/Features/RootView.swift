@@ -13,7 +13,8 @@ struct RootView: View {
                 EmptyStateView(
                     isTargeted: isTargeted,
                     onBrowse: openPanel,
-                    onSample: { model.addSampleClip() }
+                    onSample: { model.startGuidedTour() },
+                    isFirstRun: !model.onboarding.isComplete
                 )
             } else {
                 panes

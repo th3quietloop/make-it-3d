@@ -168,6 +168,11 @@ struct ReliefCommands: Commands {
             Button("Reveal Golden Set Folder") { model.revealGoldenSetFolder() }
             Divider()
             Button("Run Sign Convention Check") { model.runSignConventionCheck() }
+            Divider()
+            Button("Reset First Run") {
+                model.onboarding.reset()
+                model.toasts.info("First run reset", detail: "Empty the queue to see it.")
+            }
         }
     }
 

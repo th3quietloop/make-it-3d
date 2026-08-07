@@ -6,6 +6,9 @@ struct EmptyStateView: View {
     let isTargeted: Bool
     let onBrowse: () -> Void
     let onSample: () -> Void
+    /// True until the first run beats have been seen, which is the only thing
+    /// that changes what this screen offers.
+    var isFirstRun: Bool = false
 
     var body: some View {
         VStack(spacing: Tokens.Space.s) {
@@ -24,16 +27,23 @@ struct EmptyStateView: View {
             HStack(spacing: Tokens.Space.l) {
                 Button("Choose a file", action: onBrowse)
                     .buttonStyle(.plain)
-                    .foregroundStyle(Tokens.Palette.accent)
+                    .foregroundStyle(
+                        isFirstRun ? Tokens.Palette.textSecondary : Tokens.Palette.accent
+                    )
                     .frame(minHeight: Tokens.Layout.minTarget)
 
-                // Relief can make its own test clip, so the empty state can
-                // demonstrate the depth loop with no files on hand.
-                Button("Try a sample clip", action: onSample)
+                // Relief can make its own test clip, so a first time user can
+                // see the judging loop with no files on hand. The label makes a
+                // promise rather than describing a feature: the point is not
+                // that a sample exists, it is that you get shown how to read
+                // the depth.
+                Button(isFirstRun ? "Show me how it works" : "Try a sample clip", action: onSample)
                     .buttonStyle(.plain)
-                    .foregroundStyle(Tokens.Palette.textSecondary)
+                    .foregroundStyle(
+                        isFirstRun ? Tokens.Palette.accent : Tokens.Palette.textSecondary
+                    )
                     .frame(minHeight: Tokens.Layout.minTarget)
-                    .help("Relief generates a short clip so you can see how the preview works.")
+                    .help("Relief makes a short clip and walks you through reading its depth.")
             }
             .font(Tokens.Font.body)
             .padding(.top, Tokens.Space.xs)
@@ -56,6 +66,11 @@ struct EmptyStateView: View {
 
 #Preview("Empty") {
     EmptyStateView(isTargeted: false, onBrowse: {}, onSample: {})
+        .frame(width: 900, height: 560)
+}
+
+#Preview("First run") {
+    EmptyStateView(isTargeted: false, onBrowse: {}, onSample: {}, isFirstRun: true)
         .frame(width: 900, height: 560)
 }
 

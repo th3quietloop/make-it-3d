@@ -95,12 +95,16 @@ final class AppModel {
     var modelBanner: String?
 
     let toasts = ToastCenter()
+    let onboarding = Onboarding()
 
     // MARK: Preview
 
     let preview = PreviewController()
     var previewMode: PreviewMode = .source {
-        didSet { refreshPreview(frameChanged: false) }
+        didSet {
+            refreshPreview(frameChanged: false)
+            onboarding.previewModeUsed(previewMode, toasts: toasts)
+        }
     }
     /// Playhead position in seconds.
     var playhead: Double = 0
@@ -306,6 +310,27 @@ final class AppModel {
         )
     }
 
+    /// The first run nudge, once there is something on screen to look at.
+    private func offerFirstLook() {
+        onboarding.fileBecameReady(toasts: toasts) { [weak self] in
+            guard let self else { return }
+            self.previewMode = .wiggle
+            // Under Reduce Motion the alternation stays off, so step to the
+            // other eye instead. The comparison is the lesson either way.
+            if self.preview.reduceMotion {
+                self.preview.flipEye()
+            } else {
+                self.preview.isWigglePlaying = true
+            }
+        }
+    }
+
+    /// Generates the sample clip and walks the first run beats over it.
+    func startGuidedTour() {
+        onboarding.startTour()
+        addSampleClip()
+    }
+
     func toggleWiggle() {
         guard previewMode == .wiggle else { return }
         preview.isWigglePlaying.toggle()
@@ -321,6 +346,7 @@ final class AppModel {
 
                 if conversion.id == self?.selectionID {
                     self?.refreshPreview(frameChanged: true)
+                    self?.offerFirstLook()
                 }
 
                 if let image = try? await Ingest.image(
