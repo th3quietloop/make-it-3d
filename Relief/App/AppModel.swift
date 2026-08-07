@@ -68,6 +68,18 @@ final class AppModel {
     /// rather than failing one conversion at a time.
     var modelBanner: String?
 
+    // MARK: Preview
+
+    let preview = PreviewController()
+    var previewMode: PreviewMode = .source {
+        didSet { refreshPreview(frameChanged: false) }
+    }
+    /// Playhead position in seconds.
+    var playhead: Double = 0
+
+    var inspectorVisible = true
+    var sidebarVisible = true
+
     var outputFolder: URL = FileManager.default.urls(
         for: .moviesDirectory, in: .userDomainMask
     ).first ?? FileManager.default.homeDirectoryForCurrentUser
@@ -90,6 +102,18 @@ final class AppModel {
 
     init() {
         checkModelAvailability()
+        addLaunchArgumentFiles()
+    }
+
+    /// Any movie paths passed on the command line land in the queue at launch.
+    /// Handy for driving the app straight to a given file without clicking.
+    private func addLaunchArgumentFiles() {
+        let paths = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
+        let urls = paths
+            .map { URL(fileURLWithPath: $0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !urls.isEmpty else { return }
+        add(urls: urls)
     }
 
     private func checkModelAvailability() {
@@ -113,7 +137,71 @@ final class AppModel {
     func remove(_ conversion: Conversion) {
         guard !conversion.status.isConverting else { return }
         conversions.removeAll { $0.id == conversion.id }
-        if selectionID == conversion.id { selectionID = conversions.first?.id }
+        if selectionID == conversion.id {
+            selectionID = conversions.first?.id
+            playhead = 0
+            if selection == nil { preview.clear() } else { refreshPreview(frameChanged: true) }
+        }
+    }
+
+    func removeSelected() {
+        guard let selection else { return }
+        remove(selection)
+    }
+
+    /// Selection drives the stage.
+    func select(_ conversion: Conversion) {
+        guard selectionID != conversion.id else { return }
+        selectionID = conversion.id
+        playhead = 0
+        refreshPreview(frameChanged: true)
+    }
+
+    // MARK: Preview
+
+    /// Moves the playhead. Scrubbing re-runs the model, because the frame
+    /// genuinely changed.
+    func scrub(to seconds: Double) {
+        playhead = max(0, seconds)
+        refreshPreview(frameChanged: true)
+    }
+
+    /// Steps by whole frames, or by a second with shift held.
+    func step(frames: Int) {
+        guard let probe = selection?.probe else { return }
+        let delta = Double(frames) / probe.nominalFrameRate
+        scrub(to: min(max(playhead + delta, 0), probe.duration.seconds))
+    }
+
+    func step(seconds: Double) {
+        guard let probe = selection?.probe else { return }
+        scrub(to: min(max(playhead + seconds, 0), probe.duration.seconds))
+    }
+
+    /// Changing a parameter re-renders from the cached depth, so this is fast
+    /// and deliberately does not tell the preview the frame changed.
+    func updateTuning(_ tuning: EngineTuning, for conversion: Conversion) {
+        conversion.tuning = tuning
+        if conversion.id == selectionID { refreshPreview(frameChanged: false) }
+    }
+
+    func refreshPreview(frameChanged: Bool) {
+        guard let selection, selection.probe != nil else {
+            preview.clear()
+            return
+        }
+        preview.update(
+            url: selection.sourceURL,
+            time: CMTime(seconds: playhead, preferredTimescale: 600),
+            mode: previewMode,
+            tuning: selection.tuning,
+            frameChanged: frameChanged
+        )
+    }
+
+    func toggleWiggle() {
+        guard previewMode == .wiggle else { return }
+        preview.isWigglePlaying.toggle()
     }
 
     private func probe(_ conversion: Conversion) {
@@ -124,6 +212,10 @@ final class AppModel {
                 conversion.probe = probe
                 conversion.status = .ready
 
+                if conversion.id == self?.selectionID {
+                    self?.refreshPreview(frameChanged: true)
+                }
+
                 if let image = try? await Ingest.image(
                     at: thumbnailTime, url: conversion.sourceURL, maxSize: 256
                 ) {
@@ -132,7 +224,6 @@ final class AppModel {
             } catch {
                 conversion.status = .failed(error.localizedDescription)
             }
-            _ = self
         }
     }
 
@@ -213,6 +304,7 @@ final class AppModel {
                 conversion.exportedTuning = frozenTuning
                 conversion.status = .done(outputURL: report.outputURL)
                 print(report.text)
+                writeReport(report, for: conversion)
             case .failed(let message):
                 conversion.status = .failed(message)
             case .cancelled:
@@ -231,5 +323,80 @@ final class AppModel {
 
     func reveal(_ url: URL) {
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    // MARK: Golden set
+
+    /// Where the golden set lives. Any change to the depth model, the
+    /// smoothing, or the disparity mapping re-runs everything in here.
+    var goldenSetFolder: URL {
+        FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("ReliefGoldenSet")
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Movies/ReliefGoldenSet")
+    }
+
+    /// Queues every clip in the golden set folder and converts the lot.
+    func queueGoldenSet() {
+        let folder = goldenSetFolder
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            modelBanner = "No golden set at \(folder.path). Create the folder and put the five clips in it."
+            return
+        }
+
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        )) ?? []
+
+        let movies = contents.filter { url in
+            guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
+            return type.conforms(to: .movie) || type.conforms(to: .video)
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+        guard !movies.isEmpty else {
+            modelBanner = "The golden set folder is empty."
+            return
+        }
+
+        writesGoldenSetReports = true
+        add(urls: movies)
+        convertAllReady()
+    }
+
+    func revealGoldenSetFolder() {
+        let folder = goldenSetFolder
+        try? FileManager.default.createDirectory(
+            at: folder, withIntermediateDirectories: true
+        )
+        NSWorkspace.shared.activateFileViewerSelecting([folder])
+    }
+
+    /// Writes a dated verification report next to each export while a golden
+    /// set run is in flight.
+    private var writesGoldenSetReports = false
+
+    private func writeReport(_ report: VerificationReport, for conversion: Conversion) {
+        guard writesGoldenSetReports else { return }
+        let stamp = ISO8601DateFormatter()
+        stamp.formatOptions = [.withFullDate]
+        let name = "\(conversion.displayName)_\(stamp.string(from: Date())).txt"
+        let url = report.outputURL.deletingLastPathComponent().appendingPathComponent(name)
+        try? report.text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// Runs the deterministic stereo sign check and surfaces the result.
+    func runSignConventionCheck() {
+        Task {
+            let line: String
+            do {
+                line = try SignConventionCheck.run().line
+            } catch {
+                line = "FAIL  Stereo sign convention: \(error.localizedDescription)"
+            }
+            print(line)
+            modelBanner = line
+        }
     }
 }

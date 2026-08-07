@@ -1,129 +1,112 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Phase 1 shell: one window, a drop target, a filename, a determinate progress
-/// bar, and Reveal in Finder when it lands. Phase 3 replaces this with the
-/// three pane layout from the design file.
+/// Three panes: queue on the left, viewer in the centre, inspector on the
+/// right. The viewer is the hero because judging depth is the one job.
 struct RootView: View {
     @Bindable var model: AppModel
     @State private var isTargeted = false
 
     var body: some View {
-        VStack(spacing: Tokens.Space.m) {
-            if let banner = model.modelBanner {
-                Text(banner)
-                    .font(Tokens.Font.body)
-                    .foregroundStyle(Tokens.Palette.error)
-            }
-
+        Group {
             if model.conversions.isEmpty {
-                dropZone
+                EmptyStateView(isTargeted: isTargeted, onBrowse: openPanel)
             } else {
-                queue
-                controls
+                panes
             }
         }
-        .padding(Tokens.Space.l)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.Palette.stage)
         .onDrop(of: AppModel.supportedTypes, isTargeted: $isTargeted) { providers in
             load(providers)
             return true
         }
+        .toolbar { toolbarContent }
+        .modifier(KeyboardMap(model: model))
     }
 
-    private var dropZone: some View {
-        VStack(spacing: Tokens.Space.s) {
-            Text("Drop a movie here.")
-                .font(Tokens.Font.headline)
-                .foregroundStyle(Tokens.Palette.textPrimary)
-            Text("Relief reads its depth and writes a spatial video your Vision Pro plays natively.")
+    // MARK: Panes
+
+    private var panes: some View {
+        HStack(spacing: 0) {
+            if model.sidebarVisible {
+                QueueSidebarView(model: model)
+                    .frame(width: Tokens.Layout.sidebarWidth)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                Hairline(axis: .vertical)
+            }
+
+            VStack(spacing: 0) {
+                if let banner = model.modelBanner {
+                    bannerView(banner)
+                }
+                if let selection = model.selection {
+                    StageView(model: model, conversion: selection)
+                } else {
+                    Color.clear
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            if model.inspectorVisible, let selection = model.selection {
+                Hairline(axis: .vertical)
+                InspectorView(model: model, conversion: selection)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(Tokens.Motion.inspectorAnimation, value: model.inspectorVisible)
+        .animation(Tokens.Motion.inspectorAnimation, value: model.sidebarVisible)
+    }
+
+    private func bannerView(_ text: String) -> some View {
+        HStack(spacing: Tokens.Space.xs) {
+            Text(text)
                 .font(Tokens.Font.body)
-                .foregroundStyle(Tokens.Palette.textSecondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(
-            RoundedRectangle(cornerRadius: Tokens.Radius.panel)
-                .strokeBorder(
-                    isTargeted ? Tokens.Palette.accent : Tokens.Palette.hairline,
-                    lineWidth: Tokens.Layout.focusRingWidth
-                )
-        )
-    }
-
-    private var queue: some View {
-        VStack(spacing: Tokens.Space.xs) {
-            ForEach(model.conversions) { conversion in
-                row(conversion)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func row(_ conversion: Conversion) -> some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
-            HStack {
-                Text(conversion.displayName)
-                    .font(Tokens.Font.rowTitle)
-                    .foregroundStyle(Tokens.Palette.textPrimary)
-                Spacer()
-                statusLabel(conversion)
-            }
-
-            if case .converting(let fraction, _) = conversion.status {
-                ProgressView(value: fraction)
-                    .progressViewStyle(.linear)
-                    .tint(Tokens.Palette.accent)
-            }
-
-            if case .done(let url) = conversion.status {
-                Button("Reveal in Finder") { model.reveal(url) }
-                    .font(Tokens.Font.body)
-            }
-        }
-        .padding(Tokens.Space.s)
-        .background(Tokens.Palette.panel, in: RoundedRectangle(cornerRadius: Tokens.Radius.panel))
-    }
-
-    @ViewBuilder
-    private func statusLabel(_ conversion: Conversion) -> some View {
-        switch conversion.status {
-        case .probing:
-            Text("Reading")
-                .font(Tokens.Font.monoCaption)
-                .foregroundStyle(Tokens.Palette.textTertiary)
-        case .ready:
-            Text(conversion.probe?.displayDuration ?? "")
-                .font(Tokens.Font.monoCaption)
-                .foregroundStyle(Tokens.Palette.textSecondary)
-        case .converting(let fraction, _):
-            Text("\(Int(fraction * 100))%")
-                .font(Tokens.Font.monoCaption)
-                .foregroundStyle(Tokens.Palette.accent)
-        case .done:
-            Text("Done")
-                .font(Tokens.Font.monoCaption)
-                .foregroundStyle(Tokens.Palette.accent)
-        case .failed(let message):
-            Text(message)
-                .font(Tokens.Font.caption)
                 .foregroundStyle(Tokens.Palette.error)
-                .lineLimit(2)
+            Spacer()
+        }
+        .padding(.horizontal, Tokens.Space.m)
+        .padding(.vertical, Tokens.Space.xs)
+        .background(Tokens.Palette.error.opacity(0.10))
+    }
+
+    // MARK: Toolbar
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Button {
+                model.sidebarVisible.toggle()
+            } label: {
+                Label("Queue", systemImage: "sidebar.leading")
+            }
+            .help("Show or hide the queue")
+        }
+
+        ToolbarItem(placement: .primaryAction) {
+            Button(action: openPanel) {
+                Label("Add", systemImage: "plus")
+            }
+            .help("Add movies to the queue")
+        }
+
+        ToolbarItem(placement: .principal) {
+            if model.selection != nil {
+                PreviewModePicker(mode: $model.previewMode)
+            }
+        }
+
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                model.inspectorVisible.toggle()
+            } label: {
+                Label("Inspector", systemImage: "sidebar.trailing")
+            }
+            .help("Show or hide the inspector")
         }
     }
 
-    private var controls: some View {
-        HStack(spacing: Tokens.Space.s) {
-            Button("Add") { openPanel() }
-            Spacer()
-            if model.isConverting {
-                Button("Cancel") { model.cancelConversion() }
-            } else {
-                Button("Convert") { model.convertAllReady() }
-                    .keyboardShortcut(.return, modifiers: .command)
-            }
-        }
-    }
+    // MARK: Import
 
     private func openPanel() {
         let panel = NSOpenPanel()
@@ -145,8 +128,37 @@ struct RootView: View {
     }
 }
 
+/// The keyboard map, wired as invisible buttons so the shortcuts work whether
+/// or not the menu bar has focus. The menu commands in ReliefApp carry the same
+/// bindings, which is what makes them discoverable.
+private struct KeyboardMap: ViewModifier {
+    let model: AppModel
+
+    func body(content: Content) -> some View {
+        content.background {
+            VStack {
+                ForEach(PreviewMode.allCases) { mode in
+                    Button("") { model.previewMode = mode }
+                        .keyboardShortcut(KeyEquivalent(mode.shortcut), modifiers: [])
+                }
+                Button("") { model.toggleWiggle() }
+                    .keyboardShortcut(.space, modifiers: [])
+                Button("") { model.step(frames: -1) }
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                Button("") { model.step(frames: 1) }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                Button("") { model.step(seconds: -1) }
+                    .keyboardShortcut(.leftArrow, modifiers: .shift)
+                Button("") { model.step(seconds: 1) }
+                    .keyboardShortcut(.rightArrow, modifiers: .shift)
+            }
+            .opacity(0)
+            .frame(width: 0, height: 0)
+        }
+    }
+}
+
 #Preview {
-    let model = AppModel()
-    return RootView(model: model)
-        .frame(width: 960, height: 600)
+    RootView(model: AppModel())
+        .frame(width: 1200, height: 720)
 }

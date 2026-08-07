@@ -43,15 +43,23 @@ enum Disparity {
         let count = nearness.values.count
         var values = [Float](repeating: 0, count: count)
 
-        let scale = Float(tuning.disparityScale * Double(frameWidth))
+        let gain = Float(tuning.disparityScale * Double(frameWidth))
         let convergence = Float(tuning.convergence)
-        let sign: Float = tuning.invertDisparitySign ? -1 : 1
 
-        // d = S * W * (nearness - C), then flip if the sign convention check
-        // said to. Written as one pass over a separate output array rather than
-        // two aliased vDSP calls, so there is no reading and writing of the
-        // same buffer in a single operation.
-        let gain = scale * sign
+        // d = S * W * (nearness - C). Positive always means in front of the
+        // screen plane here, and it stays that way: the eye mapping convention
+        // is applied at synthesis, not folded into the magnitude.
+        //
+        // Folding it in here was a real bug. Negating the gain silently swapped
+        // which half of the field counted as "in front", so the comfort scaling
+        // below was applied to content behind the screen, the depth ramp drew
+        // near and far the wrong way round, and the inspector readouts were
+        // reversed. The rendered stereo still looked right, which is exactly
+        // why it survived the sign check.
+        //
+        // Written as one pass over a separate output array rather than two
+        // aliased vDSP calls, so there is no reading and writing of the same
+        // buffer in a single operation.
         nearness.values.withUnsafeBufferPointer { input in
             values.withUnsafeMutableBufferPointer { output in
                 for index in 0..<count {

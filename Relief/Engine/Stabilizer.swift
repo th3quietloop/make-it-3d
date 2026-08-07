@@ -31,6 +31,17 @@ final class Stabilizer {
         lastFrameWasSceneCut = false
     }
 
+    /// Percentile clamp and rescale to 0...1, with no temporal component.
+    ///
+    /// Exposed separately because the preview needs exactly this and nothing
+    /// more. The model emits inverse depth on an arbitrary scale, so comparing
+    /// it against the convergence point before normalizing is meaningless: the
+    /// whole frame lands on one side of the screen plane and the depth map
+    /// reads as flat. The preview skips the smoothing, not the normalization.
+    func normalize(_ map: NearnessMap) -> NearnessMap {
+        NearnessMap(values: normalized(map.values), width: map.width, height: map.height)
+    }
+
     func stabilize(_ map: NearnessMap) -> NearnessMap {
         var values = normalized(map.values)
 

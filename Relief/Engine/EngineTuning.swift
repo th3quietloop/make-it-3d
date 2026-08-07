@@ -53,16 +53,19 @@ struct EngineTuning: Sendable, Equatable, Codable {
     /// down so forward pop stays inside the comfort budget.
     var forwardPopScale: Double = 0.5
 
-    /// Flips the sign of the disparity mapping.
+    /// Flips which eye each view is sampled for, at synthesis time.
     ///
-    /// True is the verified setting, and it is not arbitrary. For an object
-    /// nearer than the screen plane, the ray from the left eye through it meets
-    /// the screen to the right of centre and the ray from the right eye meets
-    /// it to the left: crossed disparity. Rendering the raw mapping produced
-    /// the opposite, so the sign is flipped once here, which is the single
-    /// place the convention is decided. SignConventionCheck measures this
-    /// directly and fails the build gate if it ever changes.
-    var invertDisparitySign: Bool = true
+    /// The convention being asserted: for an object nearer than the screen
+    /// plane, the ray from the left eye through it meets the screen to the
+    /// right of centre and the ray from the right eye meets it to the left.
+    /// That is crossed disparity, so the left eye's copy sits further right.
+    ///
+    /// False is the verified setting. This deliberately does not touch the
+    /// disparity magnitude, where positive always means in front of the screen,
+    /// because negating that would silently reverse the meaning of every value
+    /// downstream. SignConventionCheck measures the result from rendered pixels
+    /// and fails the gate if it ever changes.
+    var invertDisparitySign: Bool = false
 
     // MARK: Synthesis
 

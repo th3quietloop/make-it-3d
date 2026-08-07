@@ -204,6 +204,13 @@ final class CoreMLDepthEstimator: DepthEstimator {
     // MARK: Output unpacking
 
     /// The model emits a one component float image. Higher is closer.
+    ///
+    /// The component width is read from the pixel format rather than assumed.
+    /// This package emits 16 bit half floats, and reading those as 32 bit
+    /// floats does not fail loudly: it consumes two rows of source for every
+    /// row of output, so the depth map comes out looking like the frame
+    /// repeated side by side, at plausible looking values. Both the preview and
+    /// the export were fed that.
     private static func nearnessMap(fromFloatBuffer buffer: CVPixelBuffer) throws -> NearnessMap {
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
@@ -211,19 +218,54 @@ final class CoreMLDepthEstimator: DepthEstimator {
         let width = CVPixelBufferGetWidth(buffer)
         let height = CVPixelBufferGetHeight(buffer)
         let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+        let format = CVPixelBufferGetPixelFormatType(buffer)
 
         guard let base = CVPixelBufferGetBaseAddress(buffer) else {
             throw DepthEstimatorError.inferenceFailed("Couldn't address the depth output.")
         }
 
         var values = [Float](repeating: 0, count: width * height)
-        values.withUnsafeMutableBufferPointer { out in
-            guard let outBase = out.baseAddress else { return }
-            for y in 0..<height {
-                let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: Float.self)
-                outBase.advanced(by: y * width).update(from: row, count: width)
+
+        switch format {
+        case kCVPixelFormatType_OneComponent32Float:
+            values.withUnsafeMutableBufferPointer { out in
+                guard let outBase = out.baseAddress else { return }
+                for y in 0..<height {
+                    let row = base.advanced(by: y * rowBytes).assumingMemoryBound(to: Float.self)
+                    outBase.advanced(by: y * width).update(from: row, count: width)
+                }
             }
+
+        case kCVPixelFormatType_OneComponent16Half:
+            var source = vImage_Buffer(
+                data: base,
+                height: vImagePixelCount(height),
+                width: vImagePixelCount(width),
+                rowBytes: rowBytes
+            )
+            var error = kvImageNoError
+            values.withUnsafeMutableBufferPointer { out in
+                guard let outBase = out.baseAddress else { return }
+                var destination = vImage_Buffer(
+                    data: outBase,
+                    height: vImagePixelCount(height),
+                    width: vImagePixelCount(width),
+                    rowBytes: width * MemoryLayout<Float>.size
+                )
+                error = vImageConvert_Planar16FtoPlanarF(&source, &destination, 0)
+            }
+            guard error == kvImageNoError else {
+                throw DepthEstimatorError.inferenceFailed(
+                    "Couldn't convert the half float depth output (\(error))."
+                )
+            }
+
+        default:
+            throw DepthEstimatorError.unexpectedModelInterface(
+                "Depth pixel format \(format) is unsupported."
+            )
         }
+
         return NearnessMap(values: values, width: width, height: height)
     }
 

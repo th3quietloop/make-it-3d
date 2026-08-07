@@ -311,7 +311,7 @@ final class WarpRenderer {
 
         var uniforms = WarpUniforms(
             frameSize: SIMD2<Float>(Float(frameWidth), Float(frameHeight)),
-            eyeFactor: eye.sampleFactor,
+            eyeFactor: eye.sampleFactor * (tuning.invertDisparitySign ? -1 : 1),
             overscan: Float(tuning.overscan)
         )
 

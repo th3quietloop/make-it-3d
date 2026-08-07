@@ -109,9 +109,12 @@ kernel void extractLuma(
 // straddle a depth discontinuity stretch across the gap, which is what covers
 // disocclusions without an inpainting pass.
 //
-// The synthesis is expressed as a gather: the eye's view samples the source at
-// x + eyeFactor * d. A source sample sitting at s therefore lands on screen at
-// s - eyeFactor * d, which is the displacement applied here.
+// Disparity arrives with positive meaning in front of the screen plane. For
+// such a point the left eye's copy belongs to the RIGHT of the right eye's
+// copy, which is crossed disparity, so a source sample at s lands on screen at
+// s + eyeFactor * d with eyeFactor positive for the left eye. The eye factor
+// carries the whole convention, so flipping it is the one place the stereo
+// sense can be reversed.
 
 vertex WarpVertexOut warpVertex(
     uint vertexID                                [[vertex_id]],
@@ -125,7 +128,7 @@ vertex WarpVertexOut warpVertex(
     const float d = disparity.sample(disparitySampler, uv).r;
 
     float2 pixel = uv * u.frameSize;
-    pixel.x -= u.eyeFactor * d;
+    pixel.x += u.eyeFactor * d;
 
     // Overscan: scale about the frame centre and let the crop to frame hide the
     // stretched edges the warp leaves behind.
@@ -161,17 +164,18 @@ struct RampUniforms {
 };
 
 kernel void depthRamp(
-    texture2d<float, access::sample> disparity [[texture(0)]],
-    texture2d<float, access::write>  output    [[texture(1)]],
-    constant RampUniforms &u                   [[buffer(0)]],
-    uint2 gid                                  [[thread_position_in_grid]])
+    texture2d<float, access::read>  disparity [[texture(0)]],
+    texture2d<float, access::write> output    [[texture(1)]],
+    constant RampUniforms &u                  [[buffer(0)]],
+    uint2 gid                                 [[thread_position_in_grid]])
 {
     if (gid.x >= output.get_width() || gid.y >= output.get_height()) { return; }
 
-    constexpr sampler rampSampler(coord::normalized, filter::linear, address::clamp_to_edge);
-    const float2 uv = (float2(gid) + 0.5) / float2(output.get_width(), output.get_height());
-
-    const float d = disparity.sample(rampSampler, uv).r;
+    // Read by pixel rather than sampling by normalized coordinate. The
+    // disparity texture and the output are the same size here, so a direct
+    // read is both exact and cheaper, and it removes any question about how
+    // the sampler maps coordinates between them.
+    const float d = disparity.read(gid).r;
     const float range = max(u.maxDisparity - u.minDisparity, 1e-5);
     const float t = clamp((d - u.minDisparity) / range, 0.0, 1.0);
 
