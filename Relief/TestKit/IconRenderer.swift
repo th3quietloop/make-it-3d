@@ -223,11 +223,20 @@ enum IconRenderer {
         let catalogURL = URL(fileURLWithPath: catalogPath ?? FileManager.default.currentDirectoryPath
             + "/Relief/Resources/Assets.xcassets")
 
+        // The .iconset and .icns are build artifacts, not app resources. They
+        // go beside the project rather than inside it: dropping them next to
+        // the asset catalog put a second Relief.icns in the target and the
+        // build failed with two commands producing the same file.
+        let artifactsURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("Icon", isDirectory: true)
+
         do {
             try FileManager.default.createDirectory(at: catalogURL, withIntermediateDirectories: true)
             try writeAppIconSet(to: catalogURL)
-            try writeIconSetAndICNS(to: catalogURL.deletingLastPathComponent())
+            try FileManager.default.createDirectory(at: artifactsURL, withIntermediateDirectories: true)
+            try writeIconSetAndICNS(to: artifactsURL)
             print("Wrote the app icon set to \(catalogURL.path)")
+            print("Wrote Relief.icns to \(artifactsURL.path)")
             return true
         } catch {
             print("Icon generation failed: \(error.localizedDescription)")

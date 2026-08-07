@@ -11,6 +11,9 @@ targets:
       - path: Relief
         excludes:
           - "Resources/Models/**"
+          # Icon build artifacts, if regenerated in place.
+          - "Resources/*.icns"
+          - "Resources/*.iconset/**"
       - path: Relief/Resources/Models
         buildPhase: resources
     settings:

@@ -1,12 +1,18 @@
 import SwiftUI
 
-/// Parameters, on the right, in the Final Cut dialect. Level 0 is the preset
-/// row and Convert; Level 1 is convergence; Level 2 is behind Advanced.
+/// Parameters, on the right, in the Final Cut dialect.
+///
+/// The language here is deliberately not the engine's language. The engine
+/// thinks in convergence, disparity, overscan, and baseline. A person sitting
+/// down to convert a home video thinks in "how much depth" and "does this look
+/// right". Every control is named for what it does to the picture, and the
+/// terms of art live in tooltips for anyone who wants them.
 struct InspectorView: View {
     @Bindable var model: AppModel
     let conversion: Conversion
 
     @State private var showAdvanced = false
+    @State private var showPlayback = false
 
     private var tuning: Binding<EngineTuning> {
         Binding(
@@ -20,60 +26,95 @@ struct InspectorView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Tokens.Space.l) {
                     strengthSection
-                    convergenceSection
-                    readoutSection
+                    balanceSection
                     advancedSection
                 }
                 .padding(Tokens.Space.m)
             }
 
-            Hairline()
+            Spacer(minLength: 0)
 
-            VStack(spacing: Tokens.Space.xs) {
-                ConvertButton(title: "Convert", state: convertState) {
-                    model.convertAllReady()
-                }
-                if case .done(let url) = conversion.status {
-                    HStack(spacing: Tokens.Space.s) {
-                        Button("Reveal in Finder") { model.reveal(url) }
-                            .buttonStyle(.plain)
-                            .font(Tokens.Font.body)
-                            .foregroundStyle(Tokens.Palette.accent)
-                        ShareLink(item: url) {
-                            Text("Share")
-                                .font(Tokens.Font.body)
-                                .foregroundStyle(Tokens.Palette.accent)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .frame(minHeight: Tokens.Layout.minTarget)
+            // The verdict sits directly above the commit, so the screen reads
+            // top to bottom as judge, then convert.
+            if let reading = model.preview.reading {
+                VStack(alignment: .leading, spacing: 0) {
+                    Hairline()
+                    DepthGauge(reading: reading)
+                        .padding(Tokens.Space.m)
                 }
             }
-            .padding(Tokens.Space.m)
+
+            Hairline()
+            actionStack
+                .padding(Tokens.Space.m)
         }
         .frame(width: Tokens.Layout.inspectorWidth)
         .background(Tokens.Palette.panel)
     }
 
-    // MARK: Convert state
+    // MARK: Actions
+
+    /// Fixed height in every state, so the primary control never moves under
+    /// the pointer as a row changes status.
+    private var actionStack: some View {
+        VStack(spacing: Tokens.Space.xs) {
+            switch conversion.status {
+            case .done(let url) where !conversion.settingsChangedSinceExport:
+                SendToHeadsetButton(url: url)
+                HStack(spacing: Tokens.Space.m) {
+                    Button("Show file") { model.reveal(url) }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Tokens.Palette.textSecondary)
+                        .help("Reveal the converted file in the Finder.")
+                    Button("Convert again") { model.reconvert(conversion) }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Tokens.Palette.textSecondary)
+                        .help("Run it through again and keep both files.")
+                }
+                .font(Tokens.Font.body)
+                .frame(minHeight: Tokens.Layout.minTarget)
+
+            default:
+                ConvertButton(title: convertTitle, state: convertState) {
+                    model.convertAllReady()
+                }
+                if model.isConverting {
+                    Button("Cancel") { model.cancelConversion() }
+                        .buttonStyle(.plain)
+                        .font(Tokens.Font.body)
+                        .foregroundStyle(Tokens.Palette.textSecondary)
+                        .frame(minHeight: Tokens.Layout.minTarget)
+                } else {
+                    Color.clear.frame(height: Tokens.Layout.minTarget)
+                }
+            }
+        }
+        .frame(height: Tokens.Layout.actionStackHeight, alignment: .top)
+    }
+
+    private var convertTitle: String {
+        conversion.settingsChangedSinceExport ? "Convert again" : "Convert"
+    }
 
     private var convertState: ConvertButton.State {
         if model.isConverting {
             return .loading(fraction: model.queueProgress)
         }
-        if case .failed(let message) = conversion.status { return .error(message) }
+        if case .failed = conversion.status { return .normal }
         if model.modelBanner != nil { return .disabled }
         if conversion.status.isReady || conversion.settingsChangedSinceExport { return .normal }
-        if conversion.status.isDone { return .disabled }
         return .disabled
     }
 
-    // MARK: Sections
+    // MARK: Strength
 
     private var strengthSection: some View {
         VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            SectionLabel(text: "Strength")
-            HStack(spacing: Tokens.Space.xxs) {
+            SectionLabel(text: "Depth strength")
+
+            // One segmented well rather than three loose buttons, so it reads
+            // as a single decision with three answers.
+            HStack(spacing: 0) {
                 ForEach(EngineTuning.Strength.allCases) { strength in
                     StrengthChip(
                         strength: strength,
@@ -87,112 +128,113 @@ struct InspectorView: View {
                     }
                 }
             }
-        }
-    }
+            .padding(Tokens.Space.xxs / 2)
+            .background(
+                RoundedRectangle(cornerRadius: Tokens.Radius.control)
+                    .fill(Tokens.Palette.controlFillQuiet)
+            )
 
-    private var convergenceSection: some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            HStack {
-                SectionLabel(text: "Convergence")
-                Spacer()
-                Readout(value: String(format: "%.2f", conversion.tuning.convergence))
-                    .font(Tokens.Font.monoCaption)
-            }
-
-            // The tick marks the screen plane: everything above it sits in
-            // front of the screen, everything below sits behind.
-            ZStack(alignment: .leading) {
-                Slider(value: tuning.convergence, in: 0...1)
-                    .tint(Tokens.Palette.accent)
-                GeometryReader { geometry in
-                    Rectangle()
-                        .fill(Tokens.Palette.textTertiary)
-                        .frame(width: Tokens.Layout.hairlineWidth, height: Tokens.Layout.tickHeight)
-                        .offset(x: geometry.size.width * 0.45, y: -2)
-                }
-                .allowsHitTesting(false)
-            }
-
-            Text("Where the screen plane sits.")
+            Text("How far apart the two eye views are pushed.")
                 .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.textTertiary)
+                .foregroundStyle(Tokens.Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    // MARK: Depth balance
+
+    /// Convergence, renamed for what it does. The engine calls it the point
+    /// where nearness maps to zero disparity; a person calls it whether the
+    /// picture comes at you or sits back.
+    private var balanceSection: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
+            SectionLabel(text: "Depth balance")
+
+            Slider(value: tuning.convergence, in: 0...1) {
+                Text("Depth balance")
+            }
+            // The label stays for VoiceOver, but it is not drawn: on macOS a
+            // Slider renders its label inline and it read as stray body text.
+            .labelsHidden()
+            .tint(Tokens.Palette.accent)
+            .help("Convergence: where the screen plane sits, 0 to 1.")
+            .accessibilityValue(balanceDescription)
+
+            HStack {
+                Text("Sits back")
+                Spacer()
+                Text("Comes forward")
+            }
+            .font(Tokens.Font.caption)
+            .foregroundStyle(Tokens.Palette.textTertiary)
+
+            Text(balanceDescription)
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private var readoutSection: some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            SectionLabel(text: "This frame")
-            HStack {
-                VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
-                    Text("In front")
-                        .font(Tokens.Font.caption)
-                        .foregroundStyle(Tokens.Palette.textTertiary)
-                    Readout(
-                        value: String(format: "%.1f px", model.preview.disparityNear),
-                        size: Tokens.TypeScale.readout
-                    )
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: Tokens.Space.xxs) {
-                    Text("Behind")
-                        .font(Tokens.Font.caption)
-                        .foregroundStyle(Tokens.Palette.textTertiary)
-                    Readout(
-                        value: String(format: "%.1f px", abs(model.preview.disparityFar)),
-                        size: Tokens.TypeScale.readout
-                    )
-                }
-            }
+    /// Says where the balance currently sits in words, so the control explains
+    /// itself without a number the user has to interpret.
+    private var balanceDescription: String {
+        switch conversion.tuning.convergence {
+        case ..<0.3: return "Most of the picture sits behind the screen."
+        case ..<0.55: return "Balanced. Most of the picture sits at screen depth."
+        case ..<0.8: return "More of the picture comes toward you."
+        default: return "Nearly everything comes toward you. Easy to overdo."
         }
     }
+
+    // MARK: Advanced
 
     private var advancedSection: some View {
-        DisclosureGroup(isExpanded: $showAdvanced) {
-            VStack(alignment: .leading, spacing: Tokens.Space.m) {
-                customDisparityControl
-
-                labelledSlider(
-                    "Overscan",
-                    value: tuning.overscan,
-                    range: 0...0.10,
-                    format: "%.1f%%",
-                    display: conversion.tuning.overscan * 100
-                )
-                labelledSlider(
-                    "Field of view",
-                    value: tuning.horizontalFOVDegrees,
-                    range: 30...120,
-                    format: "%.1f deg",
-                    display: conversion.tuning.horizontalFOVDegrees
-                )
-                labelledSlider(
-                    "Baseline",
-                    value: tuning.baselineMillimetres,
-                    range: 5...80,
-                    format: "%.1f mm",
-                    display: conversion.tuning.baselineMillimetres
-                )
-
-                VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
-                    SectionLabel(text: "Model")
-                    Text(CoreMLDepthEstimator.modelResourceName)
-                        .font(Tokens.Font.monoCaption)
-                        .foregroundStyle(Tokens.Palette.textSecondary)
+        VStack(alignment: .leading, spacing: Tokens.Space.s) {
+            // A plain row rather than a DisclosureGroup, because the group's
+            // built in chevron indents its label and breaks the left rail that
+            // every other section label aligns to.
+            Button {
+                withAnimation(Tokens.Motion.panelSpring) { showAdvanced.toggle() }
+            } label: {
+                // Chevron on the trailing edge, so the label stays flush with
+                // every other section label. A leading chevron indents its own
+                // label and breaks the left rail the rest of the pane aligns to.
+                HStack(spacing: Tokens.Space.xs) {
+                    SectionLabel(text: "More controls")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Palette.textTertiary)
+                        .rotationEffect(.degrees(showAdvanced ? 90 : 0))
                 }
+                .contentShape(Rectangle())
+                .frame(minHeight: Tokens.Layout.minTarget)
             }
-            .padding(.top, Tokens.Space.s)
-        } label: {
-            SectionLabel(text: "Advanced")
+            .buttonStyle(.plain)
+            .accessibilityLabel("More controls")
+            .accessibilityValue(showAdvanced ? "Expanded" : "Collapsed")
+
+            if showAdvanced {
+                VStack(alignment: .leading, spacing: Tokens.Space.l) {
+                    fineTuneControl
+                    edgeCleanupControl
+                    playbackGroup
+                    modelRow
+                }
+                .transition(.opacity)
+            }
         }
-        .animation(Tokens.Motion.inspectorAnimation, value: showAdvanced)
     }
 
-    private var customDisparityControl: some View {
+    /// Custom disparity percent, renamed. It is the same dial as the preset
+    /// row, just continuous.
+    private var fineTuneControl: some View {
         VStack(alignment: .leading, spacing: Tokens.Space.xs) {
             HStack {
-                SectionLabel(text: "Custom disparity")
+                SectionLabel(text: "Fine-tune strength")
                 Spacer()
-                Toggle("", isOn: Binding(
+                Toggle("Fine-tune strength", isOn: Binding(
                     get: { conversion.tuning.customDisparityPercent != nil },
                     set: { isOn in
                         var updated = conversion.tuning
@@ -205,10 +247,11 @@ struct InspectorView: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .tint(Tokens.Palette.accent)
+                .help("Set the strength by hand instead of using the presets.")
             }
 
             if let percent = conversion.tuning.customDisparityPercent {
-                HStack {
+                HStack(spacing: Tokens.Space.s) {
                     Slider(
                         value: Binding(
                             get: { percent },
@@ -219,13 +262,107 @@ struct InspectorView: View {
                             }
                         ),
                         in: 0.2...5.0
-                    )
+                    ) {
+                        Text("Strength")
+                    }
+                    .labelsHidden()
                     .tint(Tokens.Palette.accent)
+                    .accessibilityValue(String(format: "%.2f percent of frame width", percent))
+
                     Readout(value: String(format: "%.2f%%", percent))
                         .font(Tokens.Font.monoCaption)
                         .frame(width: Tokens.Layout.percentColumn, alignment: .trailing)
                 }
+                Text("Percentage of the picture's width. The presets are 1.0, 1.6, and 2.4.")
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    /// Overscan, renamed. It hides the stretched edges the warp leaves behind,
+    /// which is a thing you can see, unlike the word overscan.
+    private var edgeCleanupControl: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+            HStack {
+                SectionLabel(text: "Edge cleanup")
+                Spacer()
+                Readout(value: String(format: "%.1f%%", conversion.tuning.overscan * 100))
+                    .font(Tokens.Font.monoCaption)
+            }
+            Slider(value: tuning.overscan, in: 0...0.10) { Text("Edge cleanup") }
+                .labelsHidden()
+                .tint(Tokens.Palette.accent)
+                .help("Overscan. Zooms in slightly so the stretched edges fall outside the frame.")
+                .accessibilityValue(String(format: "%.1f percent", conversion.tuning.overscan * 100))
+            Text("Crops in a little to hide stretching at the left and right edges.")
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Field of view and baseline. These write metadata for the headset and
+    /// change nothing about the conversion or the preview, so they are grouped
+    /// apart and say so. A control next to a picture that does not change the
+    /// picture teaches people that controls here are decorative.
+    private var playbackGroup: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.s) {
+            Button {
+                withAnimation(Tokens.Motion.panelSpring) { showPlayback.toggle() }
+            } label: {
+                HStack(spacing: Tokens.Space.xs) {
+                    SectionLabel(text: "Headset playback")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Palette.textTertiary)
+                        .rotationEffect(.degrees(showPlayback ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+                .frame(minHeight: Tokens.Layout.minTarget)
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(showPlayback ? "Expanded" : "Collapsed")
+
+            if showPlayback {
+                VStack(alignment: .leading, spacing: Tokens.Space.m) {
+                    Text("Written into the file for the Vision Pro to read. These do not change the conversion or the preview.")
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
+
+                    labelledSlider(
+                        "Viewing angle",
+                        value: tuning.horizontalFOVDegrees,
+                        range: 30...120,
+                        format: "%.1f deg",
+                        display: conversion.tuning.horizontalFOVDegrees,
+                        help: "Horizontal field of view, in degrees."
+                    )
+                    labelledSlider(
+                        "Eye spacing",
+                        value: tuning.baselineMillimetres,
+                        range: 5...80,
+                        format: "%.1f mm",
+                        display: conversion.tuning.baselineMillimetres,
+                        help: "Stereo camera baseline, in millimetres."
+                    )
+                }
+                .transition(.opacity)
+            }
+        }
+    }
+
+    private var modelRow: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+            SectionLabel(text: "Depth model")
+            Text(CoreMLDepthEstimator.modelResourceName)
+                .font(Tokens.Font.monoCaption)
+                .foregroundStyle(Tokens.Palette.textSecondary)
+                .textSelection(.enabled)
         }
     }
 
@@ -234,7 +371,8 @@ struct InspectorView: View {
         value: Binding<Double>,
         range: ClosedRange<Double>,
         format: String,
-        display: Double
+        display: Double,
+        help: String
     ) -> some View {
         VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
             HStack {
@@ -243,13 +381,16 @@ struct InspectorView: View {
                 Readout(value: String(format: format, display))
                     .font(Tokens.Font.monoCaption)
             }
-            Slider(value: value, in: range)
+            Slider(value: value, in: range) { Text(title) }
+                .labelsHidden()
                 .tint(Tokens.Palette.accent)
+                .help(help)
+                .accessibilityValue(String(format: format, display))
         }
     }
 }
 
-/// One of the three strength presets.
+/// One of the three strength presets, inside the shared well.
 struct StrengthChip: View {
     let strength: EngineTuning.Strength
     let isSelected: Bool
@@ -270,9 +411,12 @@ struct StrengthChip: View {
                     RoundedRectangle(cornerRadius: Tokens.Radius.control)
                         .fill(fill)
                 )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
+        .help(strength.explanation)
+        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
     }
 
     private var fill: Color {
@@ -281,6 +425,6 @@ struct StrengthChip: View {
                 ? Tokens.Palette.accent.shiftedLightness(by: Tokens.StateShift.hover)
                 : Tokens.Palette.accent
         }
-        return isHovering ? Tokens.Palette.panelRaised : Tokens.Palette.controlFillQuiet
+        return isHovering ? Tokens.Palette.panelRaised : .clear
     }
 }

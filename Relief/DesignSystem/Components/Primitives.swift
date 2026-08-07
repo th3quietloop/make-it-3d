@@ -115,7 +115,7 @@ struct ConvertButton: View {
             if case .error(let message) = state {
                 Text(message)
                     .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.error)
+                    .foregroundStyle(Tokens.Palette.errorText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -160,6 +160,64 @@ private extension ConvertButton.State {
     }
 }
 
+/// The look of the one filled accent control, factored out so that Convert and
+/// the handoff that replaces it on completion are visibly the same object in
+/// the same slot, rather than a button and a text link that happen to sit near
+/// each other.
+struct PrimaryActionSurface: ViewModifier {
+    var isHovering: Bool
+    var isPressed: Bool
+    var isFocused: Bool
+    var isEnabled: Bool = true
+
+    private var fill: Color {
+        guard isEnabled else { return Tokens.Palette.panelRaised }
+        if isPressed { return Tokens.Palette.accent.shiftedLightness(by: Tokens.StateShift.active) }
+        if isHovering { return Tokens.Palette.accent.shiftedLightness(by: Tokens.StateShift.hover) }
+        return Tokens.Palette.accent
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: .infinity)
+            .frame(height: Tokens.Layout.minTarget)
+            .background(fill, in: RoundedRectangle(cornerRadius: Tokens.Radius.control))
+            .overlay(
+                RoundedRectangle(cornerRadius: Tokens.Radius.control)
+                    .strokeBorder(
+                        isFocused ? Tokens.Palette.focusRing : .clear,
+                        lineWidth: Tokens.Layout.focusRingWidth
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: Tokens.Radius.control))
+    }
+}
+
+/// Hands the finished file to the Vision Pro. This is the point of the app, so
+/// on a finished row it takes the primary slot rather than sitting in a corner
+/// as a 13pt link next to a disabled Convert button.
+struct SendToHeadsetButton: View {
+    let url: URL
+
+    @State private var isHovering = false
+
+    var body: some View {
+        ShareLink(item: url) {
+            Text("Send to Vision Pro")
+                .font(Tokens.Font.bodyMedium)
+                .foregroundStyle(Tokens.Palette.stage)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .modifier(PrimaryActionSurface(
+            isHovering: isHovering, isPressed: false, isFocused: false
+        ))
+        .onHover { isHovering = $0 }
+        .help("AirDrop it to the headset, or send it anywhere else.")
+        .accessibilityLabel("Send to Vision Pro")
+    }
+}
+
 /// A small chip, used for Done, Failed, and Settings changed.
 struct Chip: View {
     enum Tone { case accent, error, quiet }
@@ -170,7 +228,7 @@ struct Chip: View {
     private var foreground: Color {
         switch tone {
         case .accent: return Tokens.Palette.accent
-        case .error: return Tokens.Palette.error
+        case .error: return Tokens.Palette.errorText
         case .quiet: return Tokens.Palette.textSecondary
         }
     }

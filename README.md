@@ -133,6 +133,45 @@ Any change to the depth model, the smoothing, or the disparity mapping re-runs t
 debug menu has a "Convert golden set" item that queues everything found in that folder and
 writes a dated verification report next to each export.
 
+## The language rule
+
+The engine thinks in convergence, disparity, overscan, and baseline. The
+interface does not use any of those words.
+
+A person converting a home video thinks in "how much depth" and "does this look
+right", so every control is named for what it does to the picture: Depth
+strength, Depth balance, Edge cleanup, Fine-tune strength. The terms of art are
+still there, in the tooltips, for anyone who wants them.
+
+The same rule killed the old readouts. "In front 2.7 px, behind 4.4 px" answered
+a question nobody asked and left the only real one unanswered, so it became a
+gauge that says "Good depth" or "Too strong" with a line about what that means
+for watching it. The pixel values live in that gauge's tooltip.
+
+Field of view and baseline are grouped separately, under Headset playback, and
+say plainly that they change the file's metadata rather than the conversion. A
+control sitting next to a picture that does not change the picture teaches people
+that the controls here are decorative.
+
+## Telling the user what is happening
+
+A feature length conversion runs for an hour, and the whole premise is that you
+walk away. So:
+
+- Toasts report every event: a file added, a duplicate skipped, a file Relief
+  cannot read, a conversion finished, a conversion failed. Successes retire
+  themselves after a few seconds; failures stay until dismissed, because a
+  message you missed is a message that failed.
+- System notifications fire on finish and failure, but only when Relief is not
+  the frontmost app. Permission is asked for at the first conversion, not at
+  launch.
+- The Dock icon carries a progress bar, so the Dock answers "is it still going"
+  without switching apps.
+- Queue rows show time remaining, not just a percentage. "About 25 min left" is
+  information; "40%" on a two hour film is anxiety.
+- Quitting mid conversion asks first. It is the one genuinely destructive,
+  genuinely irreversible action in the app.
+
 ## How it works
 
 ```

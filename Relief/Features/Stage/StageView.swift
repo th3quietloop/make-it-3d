@@ -6,6 +6,9 @@ import CoreMedia
 struct StageView: View {
     @Bindable var model: AppModel
     let conversion: Conversion
+    let isTargeted: Bool
+
+    @AppStorage("hasSeenWiggleHint") private var hasSeenWiggleHint = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -18,21 +21,37 @@ struct StageView: View {
                         .aspectRatio(contentMode: .fit)
                         .id(model.previewMode)
                         .transition(.opacity)
+                        .accessibilityElement()
+                        .accessibilityLabel(stageDescription)
                 } else if let message = model.preview.errorMessage {
                     stageMessage(message, isError: true)
                 } else {
-                    stageMessage("Reading depth", isError: false)
+                    warmupMessage
                 }
 
                 if model.previewMode == .stereo {
                     eyeBadges
                 }
+                if model.previewMode == .wiggle {
+                    wiggleControls
+                }
             }
             // 150ms crossfade on mode switch. Job: feedback.
             .animation(Tokens.Motion.previewCrossfadeAnimation, value: model.previewMode)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(
+                // Drag over wake: the stage border comes up to meet the file
+                // rather than the layout shifting under the cursor.
+                RoundedRectangle(cornerRadius: Tokens.Radius.panel)
+                    .strokeBorder(
+                        isTargeted ? Tokens.Palette.accent : .clear,
+                        lineWidth: Tokens.Layout.focusRingWidth
+                    )
+                    .padding(Tokens.Space.xs)
+            )
+            .animation(Tokens.Motion.previewCrossfadeAnimation, value: isTargeted)
 
-            if model.previewMode == .wiggle {
+            if model.previewMode == .wiggle && !hasSeenWiggleHint {
                 wiggleHint
             }
 
@@ -41,14 +60,42 @@ struct StageView: View {
         .background(Tokens.Palette.stage)
     }
 
+    private var stageDescription: String {
+        let mode = model.previewMode.label
+        let time = Timecode.string(from: model.playhead)
+        if model.previewMode == .wiggle {
+            let eye = model.preview.showingLeft ? "left eye" : "right eye"
+            return "\(mode) preview, \(eye), \(conversion.displayName) at \(time)"
+        }
+        return "\(mode) preview of \(conversion.displayName) at \(time)"
+    }
+
     // MARK: Overlays
 
     private func stageMessage(_ text: String, isError: Bool) -> some View {
         Text(text)
             .font(Tokens.Font.rowTitle)
-            .foregroundStyle(isError ? Tokens.Palette.error : Tokens.Palette.textTertiary)
+            .foregroundStyle(isError ? Tokens.Palette.errorText : Tokens.Palette.textSecondary)
             .multilineTextAlignment(.center)
             .padding(Tokens.Space.l)
+    }
+
+    /// The first depth read has to load the model onto the Neural Engine, which
+    /// takes seconds. A static string for that long reads as a crash, so the
+    /// first one says it is a one time cost.
+    @ViewBuilder
+    private var warmupMessage: some View {
+        VStack(spacing: Tokens.Space.xs) {
+            Text(model.preview.isWarmingUp ? "Warming up the depth engine" : "Reading depth")
+                .font(Tokens.Font.rowTitle)
+                .foregroundStyle(Tokens.Palette.textSecondary)
+            if model.preview.isWarmingUp {
+                Text("Only takes this long the first time.")
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.textTertiary)
+            }
+        }
+        .padding(Tokens.Space.l)
     }
 
     /// The one place vermilion appears in the running app, and it is paired
@@ -66,14 +113,63 @@ struct StageView: View {
             .padding(Tokens.Space.m)
             Spacer()
         }
+        .accessibilityHidden(true)
+    }
+
+    /// Which eye is showing and whether it is running. A paused wiggle used to
+    /// be indistinguishable from Source mode.
+    private var wiggleControls: some View {
+        VStack {
+            HStack(spacing: Tokens.Space.xs) {
+                Button {
+                    model.toggleWiggle()
+                } label: {
+                    Image(systemName: model.preview.isWigglePlaying ? "pause.fill" : "play.fill")
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Palette.stage)
+                        .frame(width: Tokens.Layout.minTarget, height: Tokens.Layout.minTarget)
+                        .background(Tokens.Palette.accent, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(model.preview.reduceMotion)
+                .help(model.preview.reduceMotion
+                      ? "Alternation is off while Reduce Motion is on. Use Flip to compare."
+                      : "Play or pause the alternation. Space.")
+
+                Button("Flip") { model.preview.flipEye() }
+                    .buttonStyle(.plain)
+                    .font(Tokens.Font.monoCaption)
+                    .foregroundStyle(Tokens.Palette.textSecondary)
+                    .frame(minHeight: Tokens.Layout.minTarget)
+                    .help("Show the other eye.")
+
+                Text(model.preview.showingLeft ? "LEFT" : "RIGHT")
+                    .font(Tokens.Font.monoCaption)
+                    .foregroundStyle(
+                        model.preview.showingLeft
+                            ? Tokens.Palette.stereoL : Tokens.Palette.accent
+                    )
+
+                Spacer()
+            }
+            .padding(Tokens.Space.m)
+            Spacer()
+        }
     }
 
     private var wiggleHint: some View {
-        Text("If the wiggle looks wrong, the export will too. Tune Strength until it reads.")
-            .font(Tokens.Font.caption)
-            .foregroundStyle(Tokens.Palette.textTertiary)
-            .padding(.horizontal, Tokens.Space.m)
-            .padding(.bottom, Tokens.Space.xs)
+        HStack(spacing: Tokens.Space.xs) {
+            Text("If the wiggle looks wrong, the export will too. Tune Depth strength until it reads.")
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.textSecondary)
+            Button("Got it") { hasSeenWiggleHint = true }
+                .buttonStyle(.plain)
+                .font(Tokens.Font.caption)
+                .foregroundStyle(Tokens.Palette.accent)
+            Spacer()
+        }
+        .padding(.horizontal, Tokens.Space.m)
+        .padding(.bottom, Tokens.Space.xs)
     }
 
     // MARK: Scrubber
@@ -81,13 +177,14 @@ struct StageView: View {
     /// The only shadow in the app lives here.
     private var scrubber: some View {
         HStack(spacing: Tokens.Space.s) {
-            Text(Timecode.precise(
-                seconds: model.playhead,
-                fps: conversion.probe?.nominalFrameRate ?? 30
-            ))
-            .font(Tokens.Font.monoCaption)
-            .foregroundStyle(Tokens.Palette.textSecondary)
-            .frame(width: Tokens.Layout.timecodeColumn, alignment: .leading)
+            Text(Timecode.string(from: model.playhead))
+                .font(Tokens.Font.monoCaption)
+                .foregroundStyle(Tokens.Palette.textSecondary)
+                .frame(width: Tokens.Layout.durationColumn, alignment: .leading)
+                .help(Timecode.precise(
+                    seconds: model.playhead,
+                    fps: conversion.probe?.nominalFrameRate ?? 30
+                ))
 
             Slider(
                 value: Binding(
@@ -95,11 +192,17 @@ struct StageView: View {
                     set: { model.scrub(to: $0) }
                 ),
                 in: 0...max(conversion.probe?.duration.seconds ?? 1, 0.01)
-            )
+            ) {
+                Text("Playhead")
+            }
+            .labelsHidden()
             .tint(Tokens.Palette.accent)
             // Zero animation on scrub: speed is the affordance.
             .animation(nil, value: model.playhead)
+            .accessibilityValue(Timecode.string(from: model.playhead))
 
+            // Both ends speak the same dialect. The frame accurate reading is
+            // in the tooltip, where it does not compete.
             Text(conversion.probe?.displayDuration ?? "0:00")
                 .font(Tokens.Font.monoCaption)
                 .foregroundStyle(Tokens.Palette.textTertiary)
@@ -133,5 +236,6 @@ struct PreviewModePicker: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(width: Tokens.Layout.previewPickerWidth)
+        .help("Source, depth map, red and cyan stereo, or eye by eye comparison.")
     }
 }

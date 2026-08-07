@@ -48,6 +48,7 @@ actor PreviewEngine {
     private struct FrameKey: Equatable {
         let url: URL
         let timeValue: Double
+        let precise: Bool
     }
 
     private var estimator: CoreMLDepthEstimator?
@@ -58,6 +59,9 @@ actor PreviewEngine {
     private var cachedKey: FrameKey?
     private var cachedFrame: CVPixelBuffer?
     private var cachedNearness: NearnessMap?
+
+    private var cachedGenerator: AVAssetImageGenerator?
+    private var cachedGeneratorURL: URL?
 
     private var scratchLeft: CVPixelBuffer?
     private var scratchRight: CVPixelBuffer?
@@ -73,11 +77,24 @@ actor PreviewEngine {
 
     /// Decodes the frame at `time`, runs the depth model on it, and caches
     /// both. Cheap to call repeatedly with the same arguments.
-    func prepare(url: URL, time: CMTime, tuning: EngineTuning) async throws {
-        let key = FrameKey(url: url, timeValue: time.seconds)
+    func prepare(
+        url: URL,
+        time: CMTime,
+        tuning: EngineTuning,
+        precise: Bool = true
+    ) async throws {
+        let key = FrameKey(url: url, timeValue: time.seconds, precise: precise)
         if key == cachedKey, cachedNearness != nil { return }
+        // A precise request is already satisfied by a precise render of the
+        // same frame, but never by the fast one.
+        if !precise,
+           let cachedKey,
+           cachedKey.url == url, cachedKey.timeValue == time.seconds,
+           cachedNearness != nil {
+            return
+        }
 
-        let frame = try await decode(url: url, time: time, tuning: tuning)
+        let frame = try await decode(url: url, time: time, tuning: tuning, precise: precise)
 
         let width = CVPixelBufferGetWidth(frame)
         let height = CVPixelBufferGetHeight(frame)
@@ -104,6 +121,8 @@ actor PreviewEngine {
         cachedKey = nil
         cachedFrame = nil
         cachedNearness = nil
+        cachedGenerator = nil
+        cachedGeneratorURL = nil
     }
 
     // MARK: Rendering
@@ -154,6 +173,14 @@ actor PreviewEngine {
         let right = try scratch(.right, width: width, height: height)
         try renderer.synthesize(source: frame, disparity: field, into: left, and: right)
         return (left, right)
+    }
+
+    /// Width of the frame the preview is currently working at, which the depth
+    /// verdict needs in order to express disparity as a fraction of the picture
+    /// rather than a raw pixel count.
+    var frameWidth: Int? {
+        guard let cachedFrame else { return nil }
+        return CVPixelBufferGetWidth(cachedFrame)
     }
 
     /// The disparity range of the visible frame, for the inspector readout.
@@ -218,17 +245,54 @@ actor PreviewEngine {
         return buffer
     }
 
+    /// The generator, kept alive per file.
+    ///
+    /// Building a fresh AVURLAsset and generator on every scrub tick meant
+    /// re-opening and re-parsing the movie for each frame, which is most of why
+    /// scrubbing a long file felt underwater.
+    private func generator(for url: URL) -> AVAssetImageGenerator {
+        if let cachedGenerator, cachedGeneratorURL == url { return cachedGenerator }
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        cachedGenerator = generator
+        cachedGeneratorURL = url
+        return generator
+    }
+
     /// Pulls one frame at `time`, scaled down if the source is taller than the
     /// preview budget. Export always runs at full resolution; the preview trades
     /// pixels for the responsiveness the judgment loop needs.
-    private func decode(url: URL, time: CMTime, tuning: EngineTuning) async throws -> CVPixelBuffer {
-        let asset = AVURLAsset(url: url)
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
+    ///
+    /// `precise` is the difference between a scrub in flight and a scrub that
+    /// has landed. A zero tolerance seek has to decode forward from the previous
+    /// keyframe, which on long GOP H.264 is hundreds of milliseconds. While the
+    /// playhead is moving, the nearest sync sample is the right answer, because
+    /// the user is hunting for a moment, not inspecting one. The exact frame
+    /// arrives a beat after they stop.
+    private func decode(
+        url: URL,
+        time: CMTime,
+        tuning: EngineTuning,
+        precise: Bool
+    ) async throws -> CVPixelBuffer {
+        let generator = generator(for: url)
+        let tolerance = precise ? CMTime.zero : CMTime(value: 1, timescale: 2)
+        generator.requestedTimeToleranceBefore = tolerance
+        generator.requestedTimeToleranceAfter = tolerance
 
-        let (cgImage, _) = try await generator.image(at: time)
+        // The completion handler form, not the async property. Awaiting
+        // `generator.image(at:)` from inside the actor would send the generator
+        // across an isolation boundary, and it is deliberately actor confined.
+        let cgImage = try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Transfer<CGImage>, Error>) in
+            generator.generateCGImageAsynchronously(for: time) { image, _, error in
+                if let image {
+                    continuation.resume(returning: Transfer(image))
+                } else {
+                    continuation.resume(throwing: error ?? PreviewError.decodeFailed)
+                }
+            }
+        }.value
 
         var width = cgImage.width
         var height = cgImage.height

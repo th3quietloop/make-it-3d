@@ -10,13 +10,25 @@ struct RootView: View {
     var body: some View {
         Group {
             if model.conversions.isEmpty {
-                EmptyStateView(isTargeted: isTargeted, onBrowse: openPanel)
+                EmptyStateView(
+                    isTargeted: isTargeted,
+                    onBrowse: openPanel,
+                    onSample: { model.addSampleClip() }
+                )
             } else {
                 panes
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.Palette.stage)
+        .overlay(alignment: .bottomLeading) {
+            // Toasts sit over the stage, above the scrubber, so they never
+            // cover the picture being judged.
+            ToastStack(center: model.toasts)
+                .padding(Tokens.Space.m)
+                .padding(.bottom, Tokens.Layout.paneHeaderHeight)
+                .allowsHitTesting(!model.toasts.toasts.isEmpty)
+        }
         .onDrop(of: AppModel.supportedTypes, isTargeted: $isTargeted) { providers in
             load(providers)
             return true
@@ -30,7 +42,7 @@ struct RootView: View {
     private var panes: some View {
         HStack(spacing: 0) {
             if model.sidebarVisible {
-                QueueSidebarView(model: model)
+                QueueSidebarView(model: model, isTargeted: isTargeted)
                     .frame(width: Tokens.Layout.sidebarWidth)
                     .transition(.move(edge: .leading).combined(with: .opacity))
                 Hairline(axis: .vertical)
@@ -41,7 +53,7 @@ struct RootView: View {
                     bannerView(banner)
                 }
                 if let selection = model.selection {
-                    StageView(model: model, conversion: selection)
+                    StageView(model: model, conversion: selection, isTargeted: isTargeted)
                 } else {
                     Color.clear
                 }
@@ -54,15 +66,19 @@ struct RootView: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .animation(Tokens.Motion.inspectorAnimation, value: model.inspectorVisible)
-        .animation(Tokens.Motion.inspectorAnimation, value: model.sidebarVisible)
+        // Springs, not fixed durations: grabbing the toggle twice in a row now
+        // animates from wherever the pane currently is instead of snapping to
+        // the target and jumping.
+        .animation(Tokens.Motion.panelSpring, value: model.inspectorVisible)
+        .animation(Tokens.Motion.panelSpring, value: model.sidebarVisible)
     }
 
+    /// A standing condition, not an event. Events go through toasts.
     private func bannerView(_ text: String) -> some View {
         HStack(spacing: Tokens.Space.xs) {
             Text(text)
                 .font(Tokens.Font.body)
-                .foregroundStyle(Tokens.Palette.error)
+                .foregroundStyle(Tokens.Palette.errorText)
             Spacer()
         }
         .padding(.horizontal, Tokens.Space.m)
@@ -74,6 +90,8 @@ struct RootView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // Add lives on the left, next to the queue it adds to, per the design
+        // file. Proximity to what a control affects is the whole point.
         ToolbarItem(placement: .navigation) {
             Button {
                 model.sidebarVisible.toggle()
@@ -83,7 +101,7 @@ struct RootView: View {
             .help("Show or hide the queue")
         }
 
-        ToolbarItem(placement: .primaryAction) {
+        ToolbarItem(placement: .navigation) {
             Button(action: openPanel) {
                 Label("Add", systemImage: "plus")
             }
@@ -102,7 +120,7 @@ struct RootView: View {
             } label: {
                 Label("Inspector", systemImage: "sidebar.trailing")
             }
-            .help("Show or hide the inspector")
+            .help("Show or hide the settings")
         }
     }
 
@@ -128,9 +146,13 @@ struct RootView: View {
     }
 }
 
-/// The keyboard map, wired as invisible buttons so the shortcuts work whether
-/// or not the menu bar has focus. The menu commands in ReliefApp carry the same
-/// bindings, which is what makes them discoverable.
+/// The keyboard map.
+///
+/// The bindings live in the menu bar (ReliefApp) so they are discoverable.
+/// These hidden buttons cover the unmodified keys, which menu items alone do
+/// not reliably deliver while a control has focus. Arrow keys are deliberately
+/// absent: they belong to whichever slider is focused, and stealing them made
+/// Left mean two different things depending on where the user last clicked.
 private struct KeyboardMap: ViewModifier {
     let model: AppModel
 
@@ -143,17 +165,10 @@ private struct KeyboardMap: ViewModifier {
                 }
                 Button("") { model.toggleWiggle() }
                     .keyboardShortcut(.space, modifiers: [])
-                Button("") { model.step(frames: -1) }
-                    .keyboardShortcut(.leftArrow, modifiers: [])
-                Button("") { model.step(frames: 1) }
-                    .keyboardShortcut(.rightArrow, modifiers: [])
-                Button("") { model.step(seconds: -1) }
-                    .keyboardShortcut(.leftArrow, modifiers: .shift)
-                Button("") { model.step(seconds: 1) }
-                    .keyboardShortcut(.rightArrow, modifiers: .shift)
             }
             .opacity(0)
             .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
         }
     }
 }

@@ -33,6 +33,14 @@ enum Tokens {
 
         static let error = Color(hex: 0xE5484D)
 
+        /// Error text on a dark surface.
+        ///
+        /// The base error red measures about 3.8:1 as 11pt text on the chip
+        /// fill, which misses AA. Dark surfaces want the lighter, slightly
+        /// desaturated step of the same colour, which measures about 5.1:1.
+        /// Same semantic, correct value for the surface it sits on.
+        static let errorText = Color(hex: 0xFF6369)
+
         /// Selection tint: accent at 12% fill behind a selected queue row.
         static let selectionFill = accent.opacity(0.12)
         /// Focus ring: 2pt accent at 40%.
@@ -112,6 +120,19 @@ enum Tokens {
         /// The progress ring over a converting row's thumbnail.
         static let progressRing: CGFloat = 24
         static let progressRingWidth: CGFloat = 2
+
+        /// Pane headers. One value, so QUEUE and STRENGTH sit on the same
+        /// baseline off the toolbar edge rather than a few points apart.
+        static let paneHeaderHeight: CGFloat = 40
+
+        /// Toasts, bottom leading over the stage.
+        static let toastWidth: CGFloat = 320
+        /// The depth gauge that replaced the raw pixel readouts.
+        static let gaugeHeight: CGFloat = 8
+        static let gaugeMarker: CGFloat = 3
+        /// Reserved height for the inspector's action stack, so the primary
+        /// button never moves as a row changes status.
+        static let actionStackHeight: CGFloat = 64
         /// The tick marking the screen plane on the convergence slider.
         static let tickHeight: CGFloat = 8
         /// Fixed columns, so numbers do not jitter as their digits change.
@@ -206,6 +227,26 @@ enum Tokens {
         static let shakeOffset: CGFloat = 2
         /// One leg of the error shake. Four legs, then rest.
         static let shakeStep: Double = 0.05
+
+        /// How long a toast stays before it retires itself. Errors stay until
+        /// dismissed, because a message you missed is a message that failed.
+        static let toastDwell: Double = 4.0
+
+        /// How long the playhead has to hold still before the preview goes back
+        /// and fetches the exact frame rather than the nearest keyframe.
+        static let scrubSettle: Double = 0.25
+
+        /// Springs, not durations, for anything the user can interrupt.
+        /// Critically damped by default: graceful, no overshoot, and it always
+        /// animates from wherever the value currently is rather than snapping
+        /// to the target first.
+        static var panelSpring: Animation {
+            .spring(response: inspectorCollapse, dampingFraction: 1.0)
+        }
+        static var toastSpring: Animation {
+            // A little bounce, because a toast arrives rather than appears.
+            .spring(response: 0.35, dampingFraction: 0.8)
+        }
 
         static var previewCrossfadeAnimation: Animation {
             .easeOut(duration: previewCrossfade)

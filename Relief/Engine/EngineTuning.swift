@@ -28,6 +28,19 @@ struct EngineTuning: Sendable, Equatable, Codable {
             case .deep: return 0.024
             }
         }
+
+        /// What choosing this actually gets you, in the language of watching
+        /// something rather than measuring it.
+        var explanation: String {
+            switch self {
+            case .soft:
+                return "Subtle depth. Easiest on the eyes for a full film."
+            case .standard:
+                return "Clear depth without pushing it. Start here."
+            case .deep:
+                return "Strong depth. Best for short clips and wide shots."
+            }
+        }
     }
 
     /// The active preset. When `customDisparityPercent` is non nil it wins.

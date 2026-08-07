@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import CoreMedia
 import CoreGraphics
 import Observation
@@ -17,24 +18,49 @@ final class PreviewController {
     /// changes do not set this, because they do not run the model.
     private(set) var isReadingDepth = false
 
-    /// The disparity present in the visible frame, in pixels. Published from
-    /// here rather than queried by the inspector, so the number on screen is
-    /// always the one that produced the image next to it.
-    private(set) var disparityNear: Float = 0
-    private(set) var disparityFar: Float = 0
+    /// True on the very first run, when Core ML still has to load the model
+    /// onto the Neural Engine. That takes seconds, and a stage that just says
+    /// "Reading depth" with no movement for that long reads as a hang.
+    private(set) var isWarmingUp = false
 
-    var isWigglePlaying = true {
+    /// How much depth the visible frame has. Published from here rather than
+    /// queried by the inspector, so the verdict on screen always belongs to the
+    /// image next to it.
+    private(set) var reading: DepthReading?
+
+    /// Wiggle starts paused, always.
+    ///
+    /// Entering the mode used to begin a 6Hz hard cut flash unprompted, which
+    /// is squarely in vestibular trigger territory. The first alternation is
+    /// now a choice, and under Reduce Motion the mode stays a still comparison
+    /// the user steps through by hand.
+    var isWigglePlaying = false {
         didSet { restartWiggle() }
     }
 
+    var reduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
+    /// Which eye the stage is parked on while the wiggle is paused.
+    private(set) var showingLeft = true
+
     private let engine = PreviewEngine()
     private var pair: PreviewImage?
-    private var showingLeft = true
 
     private var renderTask: Task<Void, Never>?
     private var wiggleTask: Task<Void, Never>?
 
     private var currentMode: PreviewMode = .source
+    private var hasLoadedModelOnce = false
+
+    /// Smoothing for the depth verdict. The raw value moves frame to frame
+    /// because normalization is per frame, and a verdict that flickers between
+    /// two words as you scrub reads as a broken instrument.
+    private var smoothedLoadForward: Float = 0
+    private var smoothedLoadBehind: Float = 0
+    private var hasSmoothingHistory = false
+    private let smoothingAlpha: Float = 0.35
 
     // MARK: Updating
 
@@ -49,38 +75,92 @@ final class PreviewController {
         frameChanged: Bool
     ) {
         renderTask?.cancel()
+        let modeChanged = currentMode != mode
         currentMode = mode
+
+        // A new frame invalidates the smoothing history; a parameter change
+        // does not, because it is the same picture with a different number.
+        if frameChanged { hasSmoothingHistory = false }
+        if modeChanged { isWigglePlaying = false }
 
         renderTask = Task { [weak self] in
             guard let self else { return }
-            if frameChanged { self.isReadingDepth = true }
-            defer { self.isReadingDepth = false }
+            if frameChanged {
+                self.isReadingDepth = true
+                if !self.hasLoadedModelOnce { self.isWarmingUp = true }
+            }
+            defer {
+                self.isReadingDepth = false
+                self.isWarmingUp = false
+            }
 
             do {
-                try await self.engine.prepare(url: url, time: time, tuning: tuning)
-                guard !Task.isCancelled else { return }
-
-                let image = try await self.engine.render(mode: mode, tuning: tuning)
-                guard !Task.isCancelled else { return }
-
-                self.pair = image
-                self.showingLeft = true
-                self.displayed = image.left
-                self.errorMessage = nil
-
-                if let range = await self.engine.disparityRange(tuning: tuning) {
-                    self.disparityNear = range.near
-                    self.disparityFar = range.far
+                // Two passes while the playhead is moving. The first lands on
+                // the nearest sync sample, which is what keeps a drag feeling
+                // attached to the pointer on a long GOP file. The second is the
+                // exact frame, and only ever runs once the user stops moving,
+                // because the next update cancels this task before it gets
+                // there.
+                if frameChanged {
+                    try await self.render(url: url, time: time, mode: mode, tuning: tuning, precise: false)
+                    guard !Task.isCancelled else { return }
+                    try await Task.sleep(for: .seconds(Tokens.Motion.scrubSettle))
+                    guard !Task.isCancelled else { return }
                 }
-                self.restartWiggle()
+
+                try await self.render(url: url, time: time, mode: mode, tuning: tuning, precise: true)
             } catch is CancellationError {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
                 self.errorMessage = error.localizedDescription
                 self.displayed = nil
+                self.reading = nil
             }
         }
+    }
+
+    /// One pass: decode, run the model if the frame moved, render, publish.
+    private func render(
+        url: URL,
+        time: CMTime,
+        mode: PreviewMode,
+        tuning: EngineTuning,
+        precise: Bool
+    ) async throws {
+        try await engine.prepare(url: url, time: time, tuning: tuning, precise: precise)
+        guard !Task.isCancelled else { return }
+        hasLoadedModelOnce = true
+
+        let image = try await engine.render(mode: mode, tuning: tuning)
+        guard !Task.isCancelled else { return }
+
+        pair = image
+        showingLeft = true
+        displayed = image.left
+        errorMessage = nil
+
+        if let range = await engine.disparityRange(tuning: tuning),
+           let width = await engine.frameWidth {
+            updateReading(forward: range.near, behind: range.far, frameWidth: width)
+        }
+        restartWiggle()
+    }
+
+    private func updateReading(forward: Float, behind: Float, frameWidth: Int) {
+        if hasSmoothingHistory {
+            smoothedLoadForward += (forward - smoothedLoadForward) * smoothingAlpha
+            smoothedLoadBehind += (behind - smoothedLoadBehind) * smoothingAlpha
+        } else {
+            smoothedLoadForward = forward
+            smoothedLoadBehind = behind
+            hasSmoothingHistory = true
+        }
+        reading = DepthReading(
+            forward: smoothedLoadForward,
+            behind: smoothedLoadBehind,
+            frameWidth: frameWidth
+        )
     }
 
     func clear() {
@@ -91,15 +171,20 @@ final class PreviewController {
         displayed = nil
         pair = nil
         errorMessage = nil
+        reading = nil
+        hasSmoothingHistory = false
         Task { await engine.invalidate() }
     }
 
-    /// The disparity present in the visible frame, for the inspector readout.
-    func disparityRange(tuning: EngineTuning) async -> (near: Float, far: Float)? {
-        await engine.disparityRange(tuning: tuning)
-    }
-
     // MARK: Wiggle
+
+    /// Shows the other eye. Under Reduce Motion this is how the mode is used:
+    /// a still comparison the user steps through, rather than a flash.
+    func flipEye() {
+        guard let pair, let right = pair.right else { return }
+        showingLeft.toggle()
+        displayed = showingLeft ? pair.left : right
+    }
 
     /// Hard cut alternation between the two synthesized eyes. No crossfade:
     /// a crossfade averages the two views and kills the effect the mode exists
@@ -108,8 +193,8 @@ final class PreviewController {
         wiggleTask?.cancel()
         wiggleTask = nil
 
-        guard currentMode == .wiggle, let pair, pair.isPair, isWigglePlaying else {
-            if let pair, currentMode == .wiggle, !isWigglePlaying {
+        guard currentMode == .wiggle, let pair, pair.isPair, isWigglePlaying, !reduceMotion else {
+            if let pair, currentMode == .wiggle {
                 displayed = showingLeft ? pair.left : (pair.right ?? pair.left)
             }
             return

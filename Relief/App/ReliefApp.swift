@@ -1,8 +1,10 @@
 import SwiftUI
+import AppKit
 
 @main
 struct ReliefApp: App {
     @State private var model = AppModel()
+    @NSApplicationDelegateAdaptor(ReliefAppDelegate.self) private var appDelegate
 
     init() {
         setvbuf(stdout, nil, _IOLBF, 0)
@@ -32,10 +34,11 @@ struct ReliefApp: App {
     }
 
     var body: some Scene {
-        Window("Relief", id: "main") {
+        Window(windowTitle, id: "main") {
             RootView(model: model)
                 .frame(minWidth: 960, minHeight: 600)
                 .preferredColorScheme(.dark)
+                .onAppear { appDelegate.model = model }
         }
         .windowToolbarStyle(.unified)
         .commands { ReliefCommands(model: model) }
@@ -44,6 +47,34 @@ struct ReliefApp: App {
             SettingsView(model: model)
                 .preferredColorScheme(.dark)
         }
+    }
+
+    /// Pro apps name the document they are working on. "Relief" forever tells
+    /// the user nothing in Mission Control or the window menu.
+    private var windowTitle: String {
+        guard let name = model.selection?.displayName else { return "Relief" }
+        return "\(name) (Relief)"
+    }
+}
+
+/// Guards the exit.
+///
+/// Quitting mid conversion used to discard hours of work silently. This is the
+/// one place in Relief where a confirmation dialog is the right call: the
+/// action is genuinely destructive and genuinely irreversible.
+final class ReliefAppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor var model: AppModel?
+
+    @MainActor
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard let model, model.isConverting else { return .terminateNow }
+        return model.confirmQuitWhileConverting() ? .terminateNow : .terminateCancel
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Task { @MainActor in DockProgress.shared.fraction = nil }
     }
 }
 
@@ -68,9 +99,22 @@ struct ReliefCommands: Commands {
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
                 .disabled(model.isConverting)
 
-            Button("Cancel Conversion") { model.cancelConversion() }
+            Button("Stop Converting") { model.cancelConversion() }
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(!model.isConverting)
+
+            Divider()
+            Button("Send to Vision Pro") {
+                if case .done(let url)? = model.selection?.status { model.share(url) }
+            }
+            .keyboardShortcut("s", modifiers: [.command, .shift])
+            .disabled(!(model.selection?.status.isDone ?? false))
+
+            Button("Show in Finder") {
+                if case .done(let url)? = model.selection?.status { model.reveal(url) }
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(!(model.selection?.status.isDone ?? false))
 
             Divider()
             Button("Remove from Queue") { model.removeSelected() }
@@ -84,25 +128,31 @@ struct ReliefCommands: Commands {
                     .keyboardShortcut(KeyEquivalent(mode.shortcut), modifiers: [])
             }
             Divider()
-            Button(model.preview.isWigglePlaying ? "Pause Wiggle" : "Play Wiggle") {
+            Button(model.preview.isWigglePlaying ? "Pause Alternating" : "Start Alternating") {
                 model.toggleWiggle()
             }
             .keyboardShortcut(.space, modifiers: [])
-            .disabled(model.previewMode != .wiggle)
+            .disabled(model.previewMode != .wiggle || model.preview.reduceMotion)
+
+            Button("Show Other Eye") { model.preview.flipEye() }
+                .keyboardShortcut("e", modifiers: .command)
+                .disabled(model.previewMode != .wiggle)
 
             Divider()
+            // Cmd modified, so they never fight a focused slider for the
+            // unmodified arrow keys.
             Button("Step Back One Frame") { model.step(frames: -1) }
-                .keyboardShortcut(.leftArrow, modifiers: [])
+                .keyboardShortcut(.leftArrow, modifiers: .command)
             Button("Step Forward One Frame") { model.step(frames: 1) }
-                .keyboardShortcut(.rightArrow, modifiers: [])
+                .keyboardShortcut(.rightArrow, modifiers: .command)
             Button("Back One Second") { model.step(seconds: -1) }
-                .keyboardShortcut(.leftArrow, modifiers: .shift)
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .shift])
             Button("Forward One Second") { model.step(seconds: 1) }
-                .keyboardShortcut(.rightArrow, modifiers: .shift)
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .shift])
         }
 
         CommandGroup(after: .sidebar) {
-            Button(model.inspectorVisible ? "Hide Inspector" : "Show Inspector") {
+            Button(model.inspectorVisible ? "Hide Settings" : "Show Settings") {
                 model.inspectorVisible.toggle()
             }
             .keyboardShortcut("i", modifiers: .command)
@@ -136,33 +186,53 @@ struct ReliefCommands: Commands {
 struct SettingsView: View {
     @Bindable var model: AppModel
 
+    /// An empty or token free pattern would silently produce files that
+    /// overwrite each other, so the field says so rather than accepting it.
+    private var patternProblem: String? {
+        let trimmed = model.filenamePattern.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return "Give the pattern a name." }
+        if !trimmed.contains("{name}") {
+            return "Without {name}, every export gets the same filename."
+        }
+        if trimmed.contains("/") { return "Slashes aren't allowed in a filename." }
+        return nil
+    }
+
     var body: some View {
         Form {
             Section {
-                LabeledContent("Output folder") {
+                LabeledContent("Save to") {
                     HStack(spacing: Tokens.Space.xs) {
                         Text(model.outputFolder.lastPathComponent)
                             .font(Tokens.Font.body)
                             .foregroundStyle(Tokens.Palette.textSecondary)
+                            .help(model.outputFolder.path)
                         Button("Choose...") { chooseFolder() }
                     }
                 }
 
-                LabeledContent("Filename") {
-                    TextField("Pattern", text: $model.filenamePattern)
-                        .font(Tokens.Font.mono)
-                        .frame(width: 180)
+                LabeledContent("Name them") {
+                    VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+                        TextField("Pattern", text: $model.filenamePattern)
+                            .font(Tokens.Font.mono)
+                            .frame(width: 180)
+                        if let problem = patternProblem {
+                            Text(problem)
+                                .font(Tokens.Font.caption)
+                                .foregroundStyle(Tokens.Palette.errorText)
+                        }
+                    }
                 }
 
-                Text("{name} is replaced with the source filename.")
+                Text("{name} becomes the original filename.")
                     .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.textTertiary)
+                    .foregroundStyle(Tokens.Palette.textSecondary)
             } header: {
-                SectionLabel(text: "Export")
+                SectionLabel(text: "Exports")
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 200)
+        .frame(width: 460, height: 220)
     }
 
     private func chooseFolder() {

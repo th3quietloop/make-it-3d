@@ -1,10 +1,11 @@
 import SwiftUI
+import AppKit
 
-/// The queue. Rows are 56pt with a 40pt thumbnail, a title, and a duration in
-/// mono. Selection is encoded by a 2pt leading accent bar plus a 12% accent
-/// fill, so it reads as state rather than decoration.
+/// The queue. Selection is encoded by a 2pt leading accent bar plus a 12%
+/// accent fill, so it reads as state rather than decoration.
 struct QueueSidebarView: View {
     @Bindable var model: AppModel
+    let isTargeted: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,7 +17,7 @@ struct QueueSidebarView: View {
                     .foregroundStyle(Tokens.Palette.textTertiary)
             }
             .padding(.horizontal, Tokens.Space.m)
-            .padding(.vertical, Tokens.Space.s)
+            .frame(height: Tokens.Layout.paneHeaderHeight)
 
             Hairline()
 
@@ -28,21 +29,46 @@ struct QueueSidebarView: View {
                             isSelected: conversion.id == model.selectionID
                         )
                         .onTapGesture { model.select(conversion) }
-                        .contextMenu {
-                            Button("Remove from Queue") { model.remove(conversion) }
-                                .disabled(conversion.status.isConverting)
-                            if case .done(let url) = conversion.status {
-                                Button("Reveal in Finder") { model.reveal(url) }
-                            }
-                        }
+                        .contextMenu { rowMenu(conversion) }
                     }
                 }
+
+                // The empty stretch below the rows accepts drops too, so it
+                // says so rather than reading as dead space.
+                Text("Drop more movies here")
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.textTertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Tokens.Space.l)
             }
 
             Spacer(minLength: 0)
         }
         .frame(minWidth: Tokens.Layout.sidebarMinWidth)
         .background(Tokens.Palette.panel)
+        .overlay(
+            // Drag over wake, in the populated layout as well as the empty one.
+            RoundedRectangle(cornerRadius: Tokens.Radius.panel)
+                .strokeBorder(
+                    isTargeted ? Tokens.Palette.accent : .clear,
+                    lineWidth: Tokens.Layout.focusRingWidth
+                )
+                .padding(Tokens.Space.xxs)
+        )
+        .animation(Tokens.Motion.previewCrossfadeAnimation, value: isTargeted)
+    }
+
+    @ViewBuilder
+    private func rowMenu(_ conversion: Conversion) -> some View {
+        if case .done(let url) = conversion.status {
+            Button("Send to Vision Pro") { model.share(url) }
+            Button("Show in Finder") { model.reveal(url) }
+            Button("Convert Again") { model.reconvert(conversion) }
+                .disabled(model.isConverting)
+            Divider()
+        }
+        Button("Remove from Queue") { model.remove(conversion) }
+            .disabled(conversion.status.isConverting)
     }
 }
 
@@ -71,13 +97,16 @@ struct QueueRow: View {
             Spacer(minLength: 0)
         }
         .padding(.trailing, Tokens.Space.s)
-        .frame(height: Tokens.Layout.queueRowHeight)
+        .padding(.vertical, Tokens.Space.xs)
+        .frame(minHeight: Tokens.Layout.queueRowHeight)
         .background(background)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onChange(of: conversion.status) { _, new in
             if case .done = new { runStereoFuse() }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
     }
 
     // MARK: Title, with the signature moment
@@ -106,6 +135,7 @@ struct QueueRow: View {
     }
 
     private func runStereoFuse() {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         fuseAmount = 1
         withAnimation(.easeOut(duration: Tokens.Motion.stereoFuse)) {
             fuseAmount = 0
@@ -118,9 +148,13 @@ struct QueueRow: View {
     private var subtitle: some View {
         switch conversion.status {
         case .probing:
-            Text("Reading")
-                .font(Tokens.Font.monoCaption)
-                .foregroundStyle(Tokens.Palette.textTertiary)
+            // A skeleton, not the word "Reading". Text that says it is loading
+            // is a spinner in prose.
+            RoundedRectangle(cornerRadius: Tokens.Radius.control)
+                .fill(Tokens.Palette.panelRaised)
+                .frame(width: Tokens.Layout.durationColumn, height: Tokens.TypeScale.caption)
+                .accessibilityLabel("Reading file")
+
         case .ready:
             HStack(spacing: Tokens.Space.xs) {
                 Text(conversion.probe?.displayDuration ?? "")
@@ -130,10 +164,19 @@ struct QueueRow: View {
                     Chip(text: "Settings changed")
                 }
             }
+
         case .converting(let fraction, _):
-            Text("\(Int(fraction * 100))%")
-                .font(Tokens.Font.monoCaption)
-                .foregroundStyle(Tokens.Palette.accent)
+            HStack(spacing: Tokens.Space.xs) {
+                Text("\(Int(fraction * 100))%")
+                    .font(Tokens.Font.monoCaption)
+                    .foregroundStyle(Tokens.Palette.accent)
+                if let remaining = conversion.estimatedSecondsRemaining {
+                    Text("\(AppModel.humanDuration(remaining)) left")
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Palette.textSecondary)
+                }
+            }
+
         case .done:
             HStack(spacing: Tokens.Space.xs) {
                 Chip(text: "Done", tone: .accent)
@@ -141,8 +184,19 @@ struct QueueRow: View {
                     Chip(text: "Settings changed")
                 }
             }
-        case .failed:
-            Chip(text: "Failed", tone: .error)
+
+        case .failed(let message):
+            // The reason lives on the row that failed. It used to live only in
+            // the inspector of whichever row happened to be selected, so a
+            // queue of failures was a queue of red chips with no explanation.
+            VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+                Chip(text: "Couldn't convert", tone: .error)
+                Text(message)
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.errorText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(3)
+            }
         }
     }
 
@@ -194,7 +248,6 @@ struct QueueRow: View {
 }
 
 #Preview {
-    let model = AppModel()
-    return QueueSidebarView(model: model)
+    QueueSidebarView(model: AppModel(), isTargeted: false)
         .frame(width: Tokens.Layout.sidebarWidth, height: 500)
 }

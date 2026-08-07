@@ -5,6 +5,7 @@ import SwiftUI
 struct EmptyStateView: View {
     let isTargeted: Bool
     let onBrowse: () -> Void
+    let onSample: () -> Void
 
     var body: some View {
         VStack(spacing: Tokens.Space.s) {
@@ -20,12 +21,22 @@ struct EmptyStateView: View {
                 .lineSpacing(Tokens.LineSpacing.supporting(Tokens.TypeScale.body))
                 .frame(maxWidth: 380)
 
-            Button("Choose a file", action: onBrowse)
-                .buttonStyle(.plain)
-                .font(Tokens.Font.body)
-                .foregroundStyle(Tokens.Palette.accent)
-                .padding(.top, Tokens.Space.xs)
-                .frame(minHeight: Tokens.Layout.minTarget)
+            HStack(spacing: Tokens.Space.l) {
+                Button("Choose a file", action: onBrowse)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Tokens.Palette.accent)
+                    .frame(minHeight: Tokens.Layout.minTarget)
+
+                // Relief can make its own test clip, so the empty state can
+                // demonstrate the depth loop with no files on hand.
+                Button("Try a sample clip", action: onSample)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Tokens.Palette.textSecondary)
+                    .frame(minHeight: Tokens.Layout.minTarget)
+                    .help("Relief generates a short clip so you can see how the preview works.")
+            }
+            .font(Tokens.Font.body)
+            .padding(.top, Tokens.Space.xs)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Tokens.Palette.stage)
@@ -44,11 +55,11 @@ struct EmptyStateView: View {
 }
 
 #Preview("Empty") {
-    EmptyStateView(isTargeted: false) {}
+    EmptyStateView(isTargeted: false, onBrowse: {}, onSample: {})
         .frame(width: 900, height: 560)
 }
 
 #Preview("Drag over") {
-    EmptyStateView(isTargeted: true) {}
+    EmptyStateView(isTargeted: true, onBrowse: {}, onSample: {})
         .frame(width: 900, height: 560)
 }
