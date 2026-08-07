@@ -189,7 +189,11 @@ struct InspectorView: View {
                     .fill(Tokens.Palette.controlFillQuiet)
             )
 
-            Text("How far apart the two eye views are pushed.")
+            // Was "How far apart the two eye views are pushed", which is the
+            // mechanism. Nobody buying this owns a pair of eye views. Say what
+            // changes on screen, and say the tradeoff, because more depth
+            // reads as better right up until your eyes give out an hour in.
+            Text("How much 3D. None of them crop the picture: stronger just pushes depth further, and tires your eyes faster.")
                 .font(Tokens.Font.caption)
                 .foregroundStyle(Tokens.Palette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -217,13 +221,17 @@ struct InspectorView: View {
             .accessibilityValue(balanceDescription)
 
             HStack {
-                Text("Sits back")
+                Text("Like a window")
                 Spacer()
-                Text("Comes forward")
+                Text("Reaches out")
             }
             .font(Tokens.Font.caption)
             .foregroundStyle(Tokens.Palette.textTertiary)
 
+            // "Sits back" and "Comes forward" describe the picture. These
+            // describe the experience, which is the thing being chosen between:
+            // looking through a window at a scene, or having the scene lean
+            // into the room with you.
             Text(balanceDescription)
                 .font(Tokens.Font.caption)
                 .foregroundStyle(Tokens.Palette.textSecondary)
