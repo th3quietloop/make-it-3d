@@ -261,12 +261,23 @@ struct InspectorView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
 
-            Button("Do it again") { model.autoTune(conversion) }
-                .buttonStyle(.plain)
-                .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.accent)
-                .pressable()
-                .frame(minHeight: Tokens.Layout.minTarget, alignment: .leading)
+            // There is no "do it again" here any more. Auto is deterministic:
+            // same file, same sampling interval, same model, same thresholds,
+            // byte identical result. A button offering to redo it could not
+            // change anything, and offering a redo implies the first answer was
+            // provisional when it was not.
+            //
+            // The one moment a return trip means something is when the dials
+            // have been overridden in Custom, so that is the only moment this
+            // appears. Until then there is nothing here, which is correct.
+            if model.hasDriftedFromAuto(conversion) {
+                Button("Back to automatic") { model.returnToAutomatic(conversion) }
+                    .buttonStyle(.plain)
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.accent)
+                    .pressable()
+                    .frame(minHeight: Tokens.Layout.minTarget, alignment: .leading)
+            }
         }
     }
 

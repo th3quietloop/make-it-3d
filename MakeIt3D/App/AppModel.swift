@@ -383,6 +383,30 @@ final class AppModel {
         )
     }
 
+    /// True when the dials no longer say what Auto set them to.
+    ///
+    /// This is the only condition under which re-running the analysis means
+    /// anything. Auto is deterministic: same file, same sampling interval, same
+    /// model, same thresholds, byte identical result. A button offering to run
+    /// it again could not change the outcome, and offering to redo something
+    /// implies the first answer was provisional when it was not.
+    func hasDriftedFromAuto(_ conversion: Conversion) -> Bool {
+        guard let plan = conversion.shotPlan else { return false }
+        let time = CMTime(seconds: playhead, preferredTimescale: 600)
+        guard let shot = plan.shot(at: time) else { return false }
+        return AutoTune.apply(shot.settings, to: conversion.tuning) != conversion.tuning
+    }
+
+    /// Puts the automatic answer back.
+    func returnToAutomatic(_ conversion: Conversion) {
+        guard let plan = conversion.shotPlan else { return }
+        let time = CMTime(seconds: playhead, preferredTimescale: 600)
+        guard let shot = plan.shot(at: time) else { return }
+        conversion.tuning = AutoTune.apply(shot.settings, to: conversion.tuning)
+        refreshPreview(frameChanged: false)
+        toasts.info("Back to the automatic settings")
+    }
+
     /// Follows the playhead into a new shot and adopts its settings.
     func adoptShotSettings(at seconds: Double, for conversion: Conversion) {
         guard let plan = conversion.shotPlan else { return }

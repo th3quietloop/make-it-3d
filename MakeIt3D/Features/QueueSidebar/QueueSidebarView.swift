@@ -42,12 +42,18 @@ struct QueueSidebarView: View {
                         ForEach(model.upNext) { row($0) }
                         addMoreButton
                     } header: {
-                        QueueSectionHeader(
-                            title: "Up next",
-                            count: model.upNext.count,
-                            trailing: nil,
-                            action: nil
-                        )
+                        // With nothing finished, everything in the list is up
+                        // next by definition, and MOVIES two rows above is
+                        // already labelling it. A header that distinguishes one
+                        // section from nothing is a second name for the pane.
+                        if !model.finished.isEmpty {
+                            QueueSectionHeader(
+                                title: "Up next",
+                                count: model.upNext.count,
+                                trailing: nil,
+                                action: nil
+                            )
+                        }
                     }
                 }
                 .padding(.bottom, Tokens.Space.m)
@@ -81,19 +87,14 @@ struct QueueSidebarView: View {
                     .font(Tokens.Font.caption)
                     .foregroundStyle(Tokens.Palette.accent)
             }
-            Button {
-                model.chooseFiles()
-            } label: {
-                Image(systemName: "plus")
-                    .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.textSecondary)
-                    .frame(width: Tokens.Layout.iconButton, height: Tokens.Layout.iconButton)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .pressable()
-            .help("Add movies")
-            .accessibilityLabel("Add movies")
+            // No plus here. There were three affordances for adding a movie on
+            // screen at once: this one, the toolbar plus, and the labelled Add
+            // more movies row at the foot of the list. This was the weakest of
+            // the three, an unlabelled glyph duplicating a labelled row forty
+            // pixels below it. The other two survive because they do different
+            // jobs: the row is where you look after a conversion lands, and the
+            // toolbar plus is the macOS convention and the only one that still
+            // works when the sidebar is collapsed.
         }
         .padding(.horizontal, Tokens.Space.m)
         .frame(height: Tokens.Layout.paneHeaderHeight)
@@ -114,7 +115,8 @@ struct QueueSidebarView: View {
         QueueRow(
             conversion: conversion,
             isSelected: model.selectedIDs.contains(conversion.id),
-            isFocused: conversion.id == model.selectionID
+            isFocused: conversion.id == model.selectionID,
+            isMultiSelect: model.selectedIDs.count > 1
         )
         .onTapGesture { handleTap(conversion) }
         .contextMenu { rowMenu(conversion) }
@@ -210,6 +212,8 @@ struct QueueRow: View {
     /// The one row driving the stage. Distinct from selection, because a
     /// thirteen row selection still shows exactly one picture.
     let isFocused: Bool
+    /// True when the user has more than one row selected.
+    let isMultiSelect: Bool
 
     @State private var isHovering = false
     /// Drives the stereo fuse when a conversion lands.
@@ -384,9 +388,12 @@ struct QueueRow: View {
         RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
             .fill(fill)
             .overlay {
-                // The focused row is the one on the stage. In a multi row
-                // selection that needs saying, quietly, without a second colour.
-                if isFocused && isSelected {
+                // Fill says selected. The outline says which selected row is
+                // the one on the stage, and that is only a question worth
+                // answering when more than one is selected. On a single
+                // selection it was a second signal for a state the fill had
+                // already carried.
+                if isFocused && isSelected && isMultiSelect {
                     RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
                         .strokeBorder(Tokens.Palette.accent.opacity(0.55), lineWidth: Tokens.Layout.hairlineWidth)
                 }
