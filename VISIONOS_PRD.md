@@ -104,7 +104,16 @@ JSON:
 ```
 
 - `depthScale` and `depthOffset` map this shot's 0 to 255 back into the film's shared depth
-  space, so a cut does not flash
+  space, so a cut does not flash. The equation, stated because leaving it implicit is how
+  two sides of a frozen format quietly disagree:
+
+  ```
+  shared = (stored / 255) * depthScale + depthOffset
+  ```
+
+  `stored` is the 0 to 255 luminance in the depth track. `shared` is nearness in the film's
+  common space, larger meaning nearer. The writer computes `depthScale` and `depthOffset`;
+  the reader only applies them. Neither side inverts this without changing this line first.
 - `suggestedStrength` is S as a fraction of frame width, the same S the Mac engine uses
 - `suggestedConvergence` is C, where nearness maps to zero disparity
 - `comfortLoad` is the Mac's own verdict, 1.0 meaning exactly on the comfort budget

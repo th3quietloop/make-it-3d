@@ -258,17 +258,31 @@ final class WarpRenderer {
             throw WarpError.pipelineFailed("No command buffer.")
         }
 
-        if tuning.synthesis == .leftEyeUntouched {
-            // A blit, not a warp. The left eye is the source frame, so copying
-            // it is both exactly correct and half the GPU work of rendering it.
-            if let blit = commandBuffer.makeBlitCommandEncoder() {
-                blit.copy(from: sourceTexture, to: leftTexture)
-                blit.endEncoding()
-            }
-        } else {
-            encodeEye(commandBuffer, source: sourceTexture, destination: leftTexture, eye: .left)
-        }
-
+        // Both eyes go through the same geometry, always.
+        //
+        // The left eye used to be a straight blit when synthesis was
+        // leftEyeUntouched, on the reasoning that the left eye is the source
+        // frame so copying it is exactly right and half the work. It was not
+        // exactly right. Overscan is applied inside the mesh pass, in
+        // Warp.metal, so the blit skipped it: the right eye came out scaled by
+        // 1.025 and cropped, and the left eye came out at 1.0. The two eyes
+        // differed in size by 2.5%.
+        //
+        // Horizontal disparity is the whole point of this app and the eyes
+        // fuse it happily. Vertical disparity is different: there is no
+        // vergence mechanism for it, so a vertical size mismatch is not
+        // something the eyes resolve, it is something they fight. It would
+        // have looked correct on a monitor and ached in the headset after ten
+        // minutes, which is the third time on this project that something
+        // looked right and was not.
+        //
+        // The left eye still carries no invented pixels, which is the property
+        // that matters: eye factor zero means no disparity shift, no hole
+        // filling, no stretching. It is resampled by the same 2.5% as the
+        // right eye and nothing else. Caught by the visionOS session, which
+        // hit it by porting this renderer and running both eyes through one
+        // path.
+        encodeEye(commandBuffer, source: sourceTexture, destination: leftTexture, eye: .left)
         encodeEye(commandBuffer, source: sourceTexture, destination: rightTexture, eye: .right)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
