@@ -30,6 +30,19 @@ targets:
         # Required by notarization. Nothing in this app needs an exception:
         # no JIT, no unsigned memory, no library validation to disable.
         ENABLE_HARDENED_RUNTIME: YES
+        # Both of these are notarization requirements, and a plain xcodebuild
+        # build satisfies neither by default. Apple rejected the first
+        # submission for exactly these two reasons.
+        #
+        # A secure timestamp proves when the signature was made, so the app
+        # keeps validating after the signing certificate expires. xcodebuild
+        # only adds it when asked.
+        OTHER_CODE_SIGN_FLAGS: "--timestamp"
+        # get-task-allow lets a debugger attach. Xcode injects it into every
+        # non-archive build, and shipping it would mean shipping an app anyone
+        # can attach to. Archiving strips it; this turns the injection off so a
+        # plain build is distributable too.
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_STRICT_CONCURRENCY: complete
     info:
