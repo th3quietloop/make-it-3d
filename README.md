@@ -27,15 +27,15 @@ xcodegen generate
 ```
 
 ```bash
-xcodebuild -project Make It 3D.xcodeproj -scheme Make It 3D -configuration Debug -derivedDataPath ./build build
+xcodebuild -project MakeIt3D.xcodeproj -scheme MakeIt3D -configuration Debug -derivedDataPath ./build build
 ```
 
 ```bash
-open ./build/Build/Products/Debug/Make It 3D.app
+open ./build/Build/Products/Debug/MakeIt3D.app
 ```
 
 Launch it with `open`, not by running the binary directly. Running
-`Make It 3D.app/Contents/MacOS/Make It 3D` from a shell starts the process and installs
+`MakeIt3D.app/Contents/MacOS/MakeIt3D` from a shell starts the process and installs
 its menu bar, but the window never appears, because the app is not registered
 with the window server that way. The headless modes below are the exception:
 they never open a window, so running the binary directly is exactly right for
@@ -45,7 +45,7 @@ Any movie paths passed after the app are added to the queue at launch, which
 saves a trip through the open panel when you are testing one file repeatedly:
 
 ```bash
-open ./build/Build/Products/Debug/Make It 3D.app --args ~/Movies/clip.mov
+open ./build/Build/Products/Debug/MakeIt3D.app --args ~/Movies/clip.mov
 ```
 
 ## The app icon
@@ -55,7 +55,7 @@ two rounded frames, one vermilion and one cyan, offset horizontally and screen
 blended so the overlap resolves to near white, on the stage colour.
 
 ```bash
-./build/Build/Products/Debug/Make It 3D.app/Contents/MacOS/Make It 3D --makeicon MakeIt3D/Resources/Assets.xcassets
+./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/Make It 3D --makeicon MakeIt3D/Resources/Assets.xcassets
 ```
 
 That writes every size the asset catalog needs, drawn natively at each size
@@ -68,13 +68,13 @@ Make It 3D ships its own gate. Run the app headless and it converts a synthetic 
 generates itself, checks the stereo sign convention, and prints a verification report:
 
 ```bash
-./build/Build/Products/Debug/Make It 3D.app/Contents/MacOS/Make It 3D --selftest
+./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/Make It 3D --selftest
 ```
 
 Pass file paths after the flag to push real clips through the same path:
 
 ```bash
-./build/Build/Products/Debug/Make It 3D.app/Contents/MacOS/Make It 3D --selftest ~/Movies/clip.mov
+./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/Make It 3D --selftest ~/Movies/clip.mov
 ```
 
 The report checks four things, and they are the things that actually decide whether a file
@@ -93,7 +93,7 @@ MV-HEVC writer with no model and no warp in the loop. It is the fastest way to t
 a stalled export is the writer or something upstream of it:
 
 ```bash
-./build/Build/Products/Debug/Make It 3D.app/Contents/MacOS/Make It 3D --selftest --writerprobe
+./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/Make It 3D --selftest --writerprobe
 ```
 
 ### Measured throughput
@@ -313,11 +313,39 @@ than a tweak.
 
 ## The sandbox decision
 
-Make It 3D is ad hoc signed, unsandboxed, and has no entitlements. This is a personal tool run
-locally, not a distribution build. Skipping the sandbox removes security scoped bookmarks and
-a whole class of file access friction: the app can read any movie the user drops on it and
-write next to it without ceremony. If Make It 3D were ever distributed, the sandbox and its
-bookmark handling would have to come back.
+Make It 3D is signed with a Developer ID certificate, notarized by Apple, and unsandboxed.
+Skipping the sandbox removes security scoped bookmarks and a whole class of file access
+friction: the app reads any movie you drop on it and writes where you tell it to. That choice
+rules out the Mac App Store, which requires the sandbox. It does not affect the Developer ID
+route used here, and notarization still means Apple has scanned the binary.
+
+## Known limits
+
+Honest about where it is at v1.
+
+**Cut out edges on some shots.** The depth model produces a hard boundary between a subject
+and its background. Where that boundary does not land exactly on the silhouette, the warp
+tears and you see an outline. It is most visible on people against distinct backgrounds and
+least visible on landscapes, crowds, water, and anything where depth changes gradually.
+Turning the strength down to Soft reduces it directly, because tear width scales with
+disparity.
+
+**Cardboarding.** Objects sit at the right distance from each other but can look internally
+flat, like a pop up book. Same root cause: the model resolves depth between things better
+than depth inside them.
+
+Both are the signature failure of monocular 2D to 3D conversion and every product in this
+category has them. Feathering the disparity across depth discontinuities, and capping how
+fast disparity may change per pixel, are the two fixes that would help most. Neither is
+implemented yet.
+
+**The Steady depth model is impractical.** Video Depth Anything converts correctly and holds
+depth perfectly still, but measured at roughly 0.04 fps against 30 fps for the per frame
+model. It ships because it is correct, labelled slow, behind a warning dialog. Do not point
+it at a film.
+
+**HDR is flattened.** Sources are converted to SDR Rec. 709, because the warp renders into
+8 bit BGRA.
 
 ## Non-goals
 
