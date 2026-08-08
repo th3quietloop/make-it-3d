@@ -32,12 +32,14 @@ struct EmptyStateView: View {
                 .frame(maxWidth: 380)
 
             HStack(spacing: Tokens.Space.l) {
+                // Choose a file leads. Both options used to be the same size
+                // and colour, so neither did, and picking a file is what
+                // almost everybody arriving here wants to do.
                 Button("Choose a file", action: onBrowse)
                     .buttonStyle(.plain)
                     .pressable()
-                    .foregroundStyle(
-                        isFirstRun ? Tokens.Palette.textSecondary : Tokens.Palette.accent
-                    )
+                    .font(Tokens.Font.bodyMedium)
+                    .foregroundStyle(Tokens.Palette.accent)
                     .frame(minHeight: Tokens.Layout.minTarget)
 
                 // Make It 3D can make its own test clip, so a first time user can

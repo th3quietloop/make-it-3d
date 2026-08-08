@@ -18,12 +18,13 @@ struct QueueSidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-
-            Hairline()
-
+            // No pane header. MOVIES and TO CONVERT sat two rows apart naming
+            // the same one list, and only one of them said anything: TO CONVERT
+            // is a state, MOVIES is a category. The selection count it used to
+            // carry moved into the section header, which is where the rows it
+            // counts actually live.
             ScrollView {
-                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                LazyVStack(spacing: 0) {
                     if !model.finished.isEmpty {
                         Section {
                             ForEach(model.finished) { row($0) }
@@ -55,11 +56,13 @@ struct QueueSidebarView: View {
                         QueueSectionHeader(
                             title: "To convert",
                             count: model.upNext.count,
-                            trailing: nil,
-                            action: nil
+                            trailing: model.selectedIDs.count > 1
+                                ? "\(model.selectedIDs.count) selected" : nil,
+                            action: model.selectedIDs.count > 1 ? {} : nil
                         )
                     }
                 }
+                .padding(.top, Tokens.Space.xs)
                 .padding(.bottom, Tokens.Space.m)
             }
             .scrollEdgeFade(top: true, bottom: false)
@@ -78,30 +81,6 @@ struct QueueSidebarView: View {
         // target state, which is a different message entirely.
         .focusable()
         .focusEffectDisabled()
-    }
-
-    // MARK: Header
-
-    private var header: some View {
-        HStack(spacing: Tokens.Space.xs) {
-            SectionLabel(text: "Movies")
-            Spacer()
-            if model.selectedIDs.count > 1 {
-                Text("\(model.selectedIDs.count) selected")
-                    .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.accent)
-            }
-            // No plus here. There were three affordances for adding a movie on
-            // screen at once: this one, the toolbar plus, and the labelled Add
-            // more movies row at the foot of the list. This was the weakest of
-            // the three, an unlabelled glyph duplicating a labelled row forty
-            // pixels below it. The other two survive because they do different
-            // jobs: the row is where you look after a conversion lands, and the
-            // toolbar plus is the macOS convention and the only one that still
-            // works when the sidebar is collapsed.
-        }
-        .padding(.horizontal, Tokens.Space.m)
-        .frame(height: Tokens.Layout.paneHeaderHeight)
     }
 
     private var dragWake: some View {
@@ -205,7 +184,11 @@ struct QueueSectionHeader: View {
         }
         .padding(.horizontal, Tokens.Space.m)
         .frame(height: Tokens.Layout.sectionHeaderHeight)
-        .background(.ultraThinMaterial)
+        // No material. This sat on an already translucent vibrant sidebar, so
+        // two blurs stacked and it read as a grey bar hovering over the rows
+        // rather than a label belonging to them. The headers are no longer
+        // pinned either: two short sections do not need sticky behaviour, and
+        // unpinning is what removes the need for a background at all.
         .onHover { isHovering = $0 }
     }
 }
@@ -241,7 +224,12 @@ struct QueueRow: View {
                 SendGlyph(url: url)
             }
         }
-        .padding(.horizontal, Tokens.Space.s)
+        // Space.xs, not Space.s. The selection fill is inset by Space.xs, so
+        // Space.s here put the thumbnail at 20pt while every label in the pane
+        // sat at 16pt. Three different left edges in a 264pt column: 8 for the
+        // fill, 20 for the row, 16 for the labels. Nothing lined up with
+        // anything, which is a thing you feel before you can name it.
+        .padding(.horizontal, Tokens.Space.xs)
         .padding(.vertical, Tokens.Space.xs)
         .frame(minHeight: Tokens.Layout.queueRowHeight)
         .background(background)

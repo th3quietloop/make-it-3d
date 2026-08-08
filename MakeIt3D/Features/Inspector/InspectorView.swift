@@ -37,9 +37,13 @@ struct InspectorView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Tokens.Space.l) {
-                    autoSection
-                    Hairline()
-                    outputFacts
+                    // One hairline, not two. Two rules across a panel holding
+                    // three things makes three sections out of one thought, and
+                    // the two blocks they separated were saying the same thing.
+                    VStack(alignment: .leading, spacing: Tokens.Space.xs) {
+                        autoSection
+                        outputFacts
+                    }
                     Hairline()
                     customSection
                 }
@@ -217,13 +221,21 @@ struct InspectorView: View {
             // One fact survives, the one that changes whether you press the
             // button now or after dinner. The rest moved under the button as a
             // footnote, where facts about an action belong.
+            // "Now press Convert." is gone as a heading of its own.
+            //
+            // It and "Ready to convert" above were the same sentence twice,
+            // each given a heading, a grey paragraph and a hairline. Identical
+            // treatment on both meant neither led, which is why the panel read
+            // as bleeding together. The heading above plus the filled Convert
+            // button below already say it, and this is the detail underneath.
+            //
+            // The grammar was also broken. humanDuration returns phrases like
+            // "under a minute", so "It takes about \(duration)" produced "It
+            // takes about under a minute."
             if let probe = conversion.probe {
-                Text("Now press Convert.")
-                    .font(Tokens.Font.body)
-                    .foregroundStyle(Tokens.Palette.textPrimary)
-                Text("It takes about \(AppModel.humanDuration(Double(probe.estimatedFrameCount) / conversion.tuning.depthModel.measuredFramesPerSecond)). You can keep using the app while it runs.")
+                Text("Takes \(AppModel.humanDuration(Double(probe.estimatedFrameCount) / conversion.tuning.depthModel.measuredFramesPerSecond)). You can keep working while it runs.")
                     .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+                    .foregroundStyle(Tokens.Palette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
                     .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
             } else {
@@ -237,15 +249,28 @@ struct InspectorView: View {
     /// Thinking. The count is the interesting part, so it is the big thing.
     private func working(_ progress: Double) -> some View {
         VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            Text("\(Int(progress * 100))%")
-                .font(Tokens.Font.monoReadout)
-                .foregroundStyle(Tokens.Palette.textPrimary)
-                .contentTransition(.numericText())
+            // The heading is a sentence and the number rides beside it. It was
+            // 20pt mono over an 11pt caption, a nine point gap that made the
+            // percentage the loudest thing in the panel while saying the least.
+            HStack(alignment: .firstTextBaseline) {
+                Text("Reading the film")
+                    .font(Tokens.Font.rowTitle)
+                    .tracking(Tokens.Tracking.forSize(Tokens.TypeScale.rowTitle))
+                    .foregroundStyle(Tokens.Palette.textPrimary)
+                Spacer()
+                Text("\(Int(progress * 100))%")
+                    .font(Tokens.Font.monoCaption)
+                    .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+                    .contentTransition(.numericText())
+            }
             ProgressView(value: progress)
                 .tint(Tokens.Palette.accent)
-            Text("Reading the film shot by shot.")
+            // Names the file, so a queue of several says which one it is on.
+            Text("Looking at every shot in \(conversion.displayName).")
                 .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+                .foregroundStyle(Tokens.Palette.textTertiary)
+                .lineLimit(2)
+                .truncationMode(.middle)
         }
     }
 
@@ -316,9 +341,11 @@ struct InspectorView: View {
                     // movie. It said "again" and the user heard "next". The
                     // redo now names the file it would redo, and the way to a
                     // new one is Add more movies at the foot of the queue.
+                    // Quieter than Show file. This one spends the conversion
+                    // time again, and the two were sitting at equal weight.
                     Button("Redo this one") { model.reconvert(conversion) }
                         .buttonStyle(.plain)
-                        .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+                        .foregroundStyle(Tokens.Palette.textTertiary)
                         .pressable()
                         .disabled(model.isConverting)
                         .help("Convert \(conversion.displayName) again and keep both files.")
