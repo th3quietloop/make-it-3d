@@ -94,7 +94,7 @@ struct MakeIt3DCommands: Commands {
     /// Names what Delete will actually take, so a thirteen row selection does
     /// not hide behind the word "Remove".
     private var removeTitle: String {
-        model.selectedIDs.count > 1 ? "Remove \(model.selectedIDs.count) Movies" : "Remove Movie"
+        model.selectedIDs.count > 1 ? "Remove \(model.selectedIDs.count) Videos" : "Remove Video"
     }
 
     var body: some Commands {
@@ -108,7 +108,7 @@ struct MakeIt3DCommands: Commands {
         // work: select a run, select the lot, delete the selection.
         CommandGroup(after: .pasteboard) {
             Divider()
-            Button("Select All Movies") { model.selectAll() }
+            Button("Select All Videos") { model.selectAll() }
                 .keyboardShortcut("a", modifiers: .command)
                 .disabled(model.conversions.isEmpty)
 

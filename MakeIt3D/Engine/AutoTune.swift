@@ -5,7 +5,7 @@ import Foundation
 /// Two numbers come out: S, how far apart the eyes get pushed, and C, where the
 /// screen plane sits in the scene. Both used to be one fixed value applied to
 /// every frame of every film, which is like choosing one exposure for a whole
-/// movie and hoping.
+/// video and hoping.
 ///
 /// This is arithmetic, not a model. Disparity is linear in S, so the strength
 /// that lands a shot on a chosen comfort budget can be solved for directly

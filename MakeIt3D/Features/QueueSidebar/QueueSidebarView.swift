@@ -48,7 +48,7 @@ struct QueueSidebarView: View {
                         // This was cut last round as redundant with MOVIES two
                         // rows above, which was optimising for repetition and
                         // deleting the only word in the sidebar that implied
-                        // unfinished work. "To convert" is a state, "Movies" is
+                        // unfinished work. "To convert" is a state, "Videos" is
                         // a category, and the reported experience was not
                         // knowing that anything was still waiting. It also uses
                         // the same verb as the button, so the list and the
@@ -119,7 +119,7 @@ struct QueueSidebarView: View {
     }
 
     /// The way out of "what now". After a conversion lands, the next thing a
-    /// person wants is another movie, and the only way to say so used to be a
+    /// person wants is another video, and the only way to say so used to be a
     /// plus in the toolbar at the opposite end of the window.
     private var addMoreButton: some View {
         Button {
@@ -128,7 +128,7 @@ struct QueueSidebarView: View {
             HStack(spacing: Tokens.Space.s) {
                 Image(systemName: "plus")
                     .font(Tokens.Font.caption)
-                Text(model.conversions.isEmpty ? "Add movies" : "Add more movies")
+                Text(model.conversions.isEmpty ? "Add videos" : "Add more videos")
                     .font(Tokens.Font.body)
                 Spacer(minLength: 0)
             }
@@ -151,7 +151,7 @@ struct QueueSidebarView: View {
             Divider()
         }
         if model.selectedIDs.count > 1, model.selectedIDs.contains(conversion.id) {
-            Button("Remove \(model.selectedIDs.count) movies") { model.removeSelected() }
+            Button("Remove \(model.selectedIDs.count) videos") { model.removeSelected() }
         } else {
             Button("Remove") { model.remove(conversion) }
                 .disabled(conversion.status.isConverting)

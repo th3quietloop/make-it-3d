@@ -109,7 +109,7 @@ struct RootView: View {
             Button(action: openPanel) {
                 Label("Add", systemImage: "plus")
             }
-            .help("Add movies to the queue")
+            .help("Add videos to the queue")
         }
 
         ToolbarItem(placement: .principal) {

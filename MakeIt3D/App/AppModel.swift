@@ -170,9 +170,10 @@ final class AppModel {
 
     /// Where exports land.
     ///
-    /// Downloads, not Movies. Downloads is the folder people already know how
-    /// to find, it is in every Finder sidebar, and it is where a file you are
-    /// about to send somewhere else belongs. Movies is where a library lives,
+    /// Downloads, not the Movies folder. Downloads is the one people already
+    /// know how to find, it is in every Finder sidebar, and it is where a file
+    /// you are about to send somewhere else belongs. Movies is where a library
+    /// lives,
     /// and this app does not make libraries, it makes files you hand to a
     /// headset. The destination is also shown next to Convert, because a
     /// setting nobody can find is a setting that does not exist.
@@ -216,7 +217,7 @@ final class AppModel {
         addLaunchArgumentFiles()
     }
 
-    /// Any movie paths passed on the command line land in the queue at launch.
+    /// Any video paths passed on the command line land in the queue at launch.
     /// Handy for driving the app straight to a given file without clicking.
     private func addLaunchArgumentFiles() {
         let paths = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
@@ -288,7 +289,7 @@ final class AppModel {
         if added.count == 1 {
             toasts.success("Added \(first.displayName)", detail: "Working out the depth now.")
         } else {
-            toasts.success("Added \(added.count) movies", detail: "Working out the depth for each one.")
+            toasts.success("Added \(added.count) videos", detail: "Working out the depth for each one.")
         }
 
         // Auto runs on arrival rather than waiting to be asked.
@@ -427,7 +428,7 @@ final class AppModel {
         panel.allowsMultipleSelection = false
         panel.directoryURL = outputFolder
         panel.prompt = "Save here"
-        panel.message = "Where should converted movies be saved?"
+        panel.message = "Where should converted videos be saved?"
         if panel.runModal() == .OK, let url = panel.url {
             outputFolder = url
             toasts.info("Saving to \(url.lastPathComponent)")
@@ -453,12 +454,12 @@ final class AppModel {
             }
         }
         toasts.info(
-            ids.count == 1 ? "Cleared 1 finished movie" : "Cleared \(ids.count) finished movies",
+            ids.count == 1 ? "Cleared 1 finished video" : "Cleared \(ids.count) finished videos",
             detail: "The exported files are still in \(outputFolder.lastPathComponent)."
         )
     }
 
-    /// The open panel, on the model so every "add movies" affordance opens the
+    /// The open panel, on the model so every "add videos" affordance opens the
     /// same one rather than each surface growing its own.
     func chooseFiles() {
         let panel = NSOpenPanel()
@@ -466,7 +467,7 @@ final class AppModel {
         panel.canChooseDirectories = false
         panel.allowedContentTypes = Self.supportedTypes
         panel.prompt = "Add"
-        panel.message = "Pick the movies to convert to spatial video."
+        panel.message = "Pick the videos to convert to spatial video."
         if panel.runModal() == .OK {
             add(urls: panel.urls)
         }
@@ -528,7 +529,7 @@ final class AppModel {
         if removable.count == 1 {
             toasts.info("Removed \(removable[0].displayName)")
         } else {
-            toasts.info("Removed \(removable.count) movies")
+            toasts.info("Removed \(removable.count) videos")
         }
         if !running.isEmpty {
             toasts.info("Kept the one that is converting", detail: "Stop it first if you want it gone.")
@@ -598,7 +599,7 @@ final class AppModel {
         runningIDs = Set(batch.map(\.id))
         let total = batch.count
         if total > 1 {
-            toasts.info("Converting \(total) movies", detail: "They run one after another.")
+            toasts.info("Converting \(total) videos", detail: "They run one after another.")
         }
 
         conversionTask = Task { [weak self] in
@@ -788,8 +789,8 @@ final class AppModel {
     /// The Convert button. Acts on the selection, and only the selection.
     ///
     /// It used to act on everything ready no matter what was highlighted, so
-    /// selecting one movie out of four produced a button reading "Convert 4
-    /// movies". The label was honest about what the button did and the button
+    /// selecting one video out of four produced a button reading "Convert 4
+    /// videos". The label was honest about what the button did and the button
     /// was doing the wrong thing.
     func convertSelected() {
         let work = selectedReady.isEmpty ? readyToConvert : selectedReady
@@ -1028,18 +1029,18 @@ final class AppModel {
             at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
         )) ?? []
 
-        let movies = contents.filter { url in
+        let videos = contents.filter { url in
             guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
-            return type.conforms(to: .movie) || type.conforms(to: .video)
+            return type.conforms(to: .video) || type.conforms(to: .video)
         }.sorted { $0.lastPathComponent < $1.lastPathComponent }
 
-        guard !movies.isEmpty else {
+        guard !videos.isEmpty else {
             toasts.info("The golden set folder is empty")
             return
         }
 
         writesGoldenSetReports = true
-        add(urls: movies)
+        add(urls: videos)
         convertAllReady()
     }
 

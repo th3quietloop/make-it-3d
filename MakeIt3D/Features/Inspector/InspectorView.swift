@@ -338,9 +338,9 @@ struct InspectorView: View {
                         .help("Reveal the converted file in the Finder.")
                     // Was "Convert again", which reads as the forward action
                     // on a screen where the forward action is a different
-                    // movie. It said "again" and the user heard "next". The
+                    // video. It said "again" and the user heard "next". The
                     // redo now names the file it would redo, and the way to a
-                    // new one is Add more movies at the foot of the queue.
+                    // new one is Add more videos at the foot of the queue.
                     // Quieter than Show file. This one spends the conversion
                     // time again, and the two were sitting at equal weight.
                     Button("Redo this one") { model.reconvert(conversion) }
@@ -419,14 +419,14 @@ struct InspectorView: View {
 
     /// The button names what it will convert, which is the selection.
     ///
-    /// It used to count everything ready in the whole list, so one movie
-    /// highlighted out of four read "Convert 4 movies". Selecting one thing and
+    /// It used to count everything ready in the whole list, so one video
+    /// highlighted out of four read "Convert 4 videos". Selecting one thing and
     /// being offered an action on four is the kind of small lie that makes
     /// someone stop trusting the rest of the window.
     private var convertTitle: String {
         let count = model.selectedReady.count
         if model.isConverting { return "Converting" }
-        if count > 1 { return "Convert \(count) movies" }
+        if count > 1 { return "Convert \(count) videos" }
         return conversion.settingsChangedSinceExport ? "Convert with new settings" : "Convert"
     }
 

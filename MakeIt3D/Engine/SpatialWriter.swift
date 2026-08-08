@@ -135,7 +135,7 @@ final class SpatialWriter: SpatialVideoWriting {
             AVVideoAverageBitRateKey: Self.bitrate(for: probe)
         ]
 
-        // Rectilinear projection: a converted flat movie is a flat rectangle,
+        // Rectilinear projection: a converted flat video is a flat rectangle,
         // not a dome.
         compression[kVTCompressionPropertyKey_ProjectionKind as String] =
             kCMFormatDescriptionProjectionKind_Rectilinear as String

@@ -254,7 +254,7 @@ actor PreviewEngine {
     /// The generator, kept alive per file.
     ///
     /// Building a fresh AVURLAsset and generator on every scrub tick meant
-    /// re-opening and re-parsing the movie for each frame, which is most of why
+    /// re-opening and re-parsing the video for each frame, which is most of why
     /// scrubbing a long file felt underwater.
     private func generator(for url: URL) -> AVAssetImageGenerator {
         if let cachedGenerator, cachedGeneratorURL == url { return cachedGenerator }
@@ -351,7 +351,7 @@ enum PreviewError: LocalizedError {
         case .noFrame:
             return "There's no frame to preview yet."
         case .decodeFailed:
-            return "Couldn't read a frame at that point in the movie."
+            return "Couldn't read a frame at that point in the video."
         case .renderFailed:
             return "Couldn't draw the preview."
         }

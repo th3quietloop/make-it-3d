@@ -40,7 +40,7 @@ enum IngestError: LocalizedError {
     }
 }
 
-/// Reads a source movie: probes it, makes a thumbnail, and hands frames to the
+/// Reads a source video: probes it, makes a thumbnail, and hands frames to the
 /// pipeline as an async stream with backpressure.
 struct Ingest {
 

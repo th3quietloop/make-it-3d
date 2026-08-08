@@ -1,16 +1,16 @@
-Turns a flat movie into Apple spatial video your Vision Pro plays natively. Runs entirely on
+Turns your videos into 3D your Vision Pro plays natively. Runs entirely on
 your Mac. No account, no upload, nothing leaves the machine.
 
 ## Getting it
 
-Download `MakeIt3D-1.2.0.zip`, unzip, drag to Applications. Signed and notarized by Apple, so
+Download `MakeIt3D-1.2.1.zip`, unzip, drag to Applications. Signed and notarized by Apple, so
 it opens without a warning.
 
 Needs macOS 15 or later on Apple silicon.
 
 ## Using it
 
-Drop a movie in. The app reads it, finds every cut, and sets the depth for each shot on its
+Drop a video in. The app reads it, finds every cut, and sets the depth for each shot on its
 own. Press Convert. When it finishes, send it to the headset and open it in Photos.
 
 Before converting, look at the depth. **Compare eyes** flips between the left and right view,

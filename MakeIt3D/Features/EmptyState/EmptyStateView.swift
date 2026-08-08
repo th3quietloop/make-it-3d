@@ -12,7 +12,7 @@ struct EmptyStateView: View {
 
     var body: some View {
         VStack(spacing: Tokens.Space.s) {
-            Text("Drop a movie here.")
+            Text("Drop a video here.")
                 .font(Tokens.Font.headline)
                 // Display type wants negative tracking and tight leading. At
                 // 28pt, default spacing reads as letters drifting apart and a
@@ -24,7 +24,7 @@ struct EmptyStateView: View {
             // The promise, not the process. "Reads its depth and writes a
             // spatial video" describes a mechanism to somebody who has not yet
             // decided they want the outcome.
-            Text("Turns any flat video into 3D you can watch on your Vision Pro.")
+            Text("Turns your videos into 3D you can watch on your Vision Pro.")
                 .font(Tokens.Font.body)
                 .foregroundStyle(Tokens.Palette.textSecondary)
                 .multilineTextAlignment(.center)

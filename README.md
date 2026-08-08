@@ -1,10 +1,12 @@
 # Make It 3D
 
-A macOS app that converts 2D video into Apple spatial video (MV-HEVC) for the Vision Pro.
+Turn your videos into 3D you can watch on a Vision Pro.
 
-Named for what it does. You point it at a flat movie and it makes it 3D.
+A macOS app that converts 2D video into Apple spatial video (MV-HEVC).
 
-Drop a flat movie in, judge its depth in four preview modes, tune it, and export a `.mov`
+Named for what it does. You point it at a flat video and it makes it 3D.
+
+Drop a flat video in, judge its depth in four preview modes, tune it, and export a `.mov`
 that visionOS Photos, Files, and AVPlayer treat as native spatial video, with the original
 audio passed through untouched.
 
@@ -41,7 +43,7 @@ with the window server that way. The headless modes below are the exception:
 they never open a window, so running the binary directly is exactly right for
 them.
 
-Any movie paths passed after the app are added to the queue at launch, which
+Any video paths passed after the app are added to the queue at launch, which
 saves a trip through the open panel when you are testing one file repeatedly:
 
 ```bash
@@ -315,7 +317,7 @@ than a tweak.
 
 Make It 3D is signed with a Developer ID certificate, notarized by Apple, and unsandboxed.
 Skipping the sandbox removes security scoped bookmarks and a whole class of file access
-friction: the app reads any movie you drop on it and writes where you tell it to. That choice
+friction: the app reads any video you drop on it and writes where you tell it to. That choice
 rules out the Mac App Store, which requires the sandbox. It does not affect the Developer ID
 route used here, and notarization still means Apple has scanned the binary.
 
