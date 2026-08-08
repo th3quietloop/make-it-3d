@@ -14,3 +14,4 @@ Tools/modelconv/debug_node.py
 Tools/modelconv/da3/
 Tools/modelconv/*.log
 .build/
+MakeIt3D-*.zip
