@@ -102,6 +102,16 @@ enum SelfTest {
         } catch {
             say("FAIL  Stereo sign convention: could not run. \(error.localizedDescription)")
         }
+
+        // Measured from the pixels of the frame actually playing, because every
+        // other number in this report would read perfectly on a flat picture.
+        do {
+            for result in try model.runEyeSeparationCheck() {
+                say(result.line)
+            }
+        } catch {
+            say("FAIL  Eye separation: could not run. \(error.localizedDescription)")
+        }
         say("")
 
         // Reset so the settling period does not colour the reading.

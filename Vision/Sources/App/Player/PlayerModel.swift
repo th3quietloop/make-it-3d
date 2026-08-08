@@ -323,6 +323,27 @@ final class PlayerModel {
         try SignConventionCheck.run(library: library, device: device, tuning: tuning)
     }
 
+    /// Measures, from the pixels of the frame currently playing, that the two
+    /// eye views are genuinely two different pictures.
+    ///
+    /// The counters in this class cannot answer that. They say the right depth
+    /// frame was found and the right two frames were paired, and every one of
+    /// them would read perfectly while the viewer looked at a flat picture.
+    func runEyeSeparationCheck() throws -> [CheckResult] {
+        guard let renderer else {
+            throw CheckAborted(check: "Eye separation", reason: "no film is playing.")
+        }
+        let pixels = disparityPixels ?? (forward: 0, behind: 0)
+        return try EyeSeparationCheck.run(
+            renderer: renderer,
+            queue: queue,
+            bridge: bridge,
+            tuning: tuning,
+            predictedForwardPop: pixels.forward,
+            predictedDepthBehind: pixels.behind
+        )
+    }
+
     /// Forward pop and depth behind the screen, in pixels, for the shot in
     /// play. What the gauge shows.
     var disparityPixels: (forward: Double, behind: Double)? {
