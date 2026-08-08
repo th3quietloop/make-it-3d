@@ -3,7 +3,7 @@ your Mac. No account, no upload, nothing leaves the machine.
 
 ## Getting it
 
-Download `MakeIt3D-1.2.2.zip`, unzip, drag to Applications. Signed and notarized by Apple, so
+Download `MakeIt3D-1.2.3.zip`, unzip, drag to Applications. Signed and notarized by Apple, so
 it opens without a warning.
 
 Needs macOS 15 or later on Apple silicon.
