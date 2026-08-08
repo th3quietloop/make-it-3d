@@ -21,7 +21,10 @@ struct EmptyStateView: View {
                 .foregroundStyle(Tokens.Palette.textPrimary)
                 .lineSpacing(Tokens.LineSpacing.display(Tokens.TypeScale.headline))
 
-            Text("Make It 3D reads its depth and writes a spatial video your Vision Pro plays natively.")
+            // The promise, not the process. "Reads its depth and writes a
+            // spatial video" describes a mechanism to somebody who has not yet
+            // decided they want the outcome.
+            Text("Turns any flat video into 3D you can watch on your Vision Pro.")
                 .font(Tokens.Font.body)
                 .foregroundStyle(Tokens.Palette.textSecondary)
                 .multilineTextAlignment(.center)

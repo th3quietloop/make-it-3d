@@ -106,7 +106,10 @@ struct ShotStrip: View {
         guard let current = plan.shot(at: CMTime(seconds: playhead, preferredTimescale: 600)) else {
             return plan.summary
         }
-        return "Shot \(current.id + 1) of \(plan.shots.count). \(current.settings.explanation)"
+        // Was followed by the tuner explaining its reasoning, unprompted,
+        // while you are trying to look at a picture. The colour already
+        // carries it and the tooltip has the detail for anyone who asks.
+        return "Shot \(current.id + 1) of \(plan.shots.count)"
     }
 }
 

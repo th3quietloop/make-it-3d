@@ -175,19 +175,27 @@ struct InspectorView: View {
 
     /// What the dials are currently set to, in the fewest words that are true.
     private var currentSettingsSummary: String {
+        // Was "2.4%, reaching out". 2.4% of what, and reaching out from where.
+        // A number with no unit next to a phrase with no referent.
         let strength: String
-        if let custom = conversion.tuning.customDisparityPercent {
-            strength = String(format: "%.1f%%", custom)
-        } else {
-            strength = conversion.tuning.strength.label
+        switch conversion.tuning.disparityScale {
+        case ..<0.012: strength = "Gentle depth"
+        case ..<0.020: strength = "Normal depth"
+        default: strength = "Strong depth"
         }
-        let balance: String
         switch conversion.tuning.convergence {
         case ..<0.4: return "\(strength), like a window"
-        case ..<0.65: balance = "balanced"
-        default: balance = "reaching out"
+        case ..<0.65: return strength
+        default: return "\(strength), comes toward you"
         }
-        return "\(strength), \(balance)"
+    }
+
+    /// Depth first, comfort second, in one sentence each rather than a report.
+    private func readyDetail(_ plan: ShotPlan) -> String {
+        let shots = plan.shots.count == 1
+            ? "Depth is set."
+            : "Depth is set for all \(plan.shots.count) shots."
+        return "\(shots) \(plan.comfortNote)"
     }
 
     // MARK: What you are about to make
@@ -200,31 +208,29 @@ struct InspectorView: View {
     /// this panel that was still missing after the reduction.
     private var outputFacts: some View {
         VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            SectionLabel(text: "You will get")
+            // The spec sheet used to live here: four rows of resolution,
+            // length, size and time, taken from how Arcade and VEED annotate
+            // their export buttons. Those sit inside a modal somebody opened on
+            // purpose to export. This one is always on, and it was competing
+            // with the only sentence that matters at this moment.
+            //
+            // One fact survives, the one that changes whether you press the
+            // button now or after dinner. The rest moved under the button as a
+            // footnote, where facts about an action belong.
             if let probe = conversion.probe {
-                factRow("Spatial video", "\(probe.width) x \(probe.height)")
-                factRow("Length", probe.displayDuration)
-                factRow("About", AppModel.estimatedSize(for: probe))
-                factRow("Takes about", AppModel.humanDuration(
-                    Double(probe.estimatedFrameCount) / conversion.tuning.depthModel.measuredFramesPerSecond
-                ))
+                Text("Now press Convert.")
+                    .font(Tokens.Font.body)
+                    .foregroundStyle(Tokens.Palette.textPrimary)
+                Text("It takes about \(AppModel.humanDuration(Double(probe.estimatedFrameCount) / conversion.tuning.depthModel.measuredFramesPerSecond)). You can keep using the app while it runs.")
+                    .font(Tokens.Font.caption)
+                    .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
             } else {
                 Text("Reading the file.")
                     .font(Tokens.Font.caption)
                     .foregroundStyle(Tokens.Palette.textTertiary)
             }
-        }
-    }
-
-    private func factRow(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label)
-                .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.textTertiary)
-            Spacer()
-            Text(value)
-                .font(Tokens.Font.monoCaption)
-                .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
         }
     }
 
@@ -247,15 +253,24 @@ struct InspectorView: View {
     /// about comfort, and a quiet way to run it again.
     private func verdict(_ plan: ShotPlan) -> some View {
         VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            HStack(spacing: Tokens.Space.xs) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(Tokens.Palette.accent)
-                Text(plan.shots.count == 1 ? "Depth set" : "Depth set for \(plan.shots.count) shots")
-                    .font(Tokens.Font.bodyMedium)
-                    .foregroundStyle(Tokens.Palette.textPrimary)
-            }
+            // No checkmark here.
+            //
+            // A filled checkmark in a circle is the universal done symbol, and
+            // this panel put one next to "Depth set for 3 shots" while a
+            // Convert button sat underneath waiting to be pressed. The app was
+            // declaring success on a step and then asking for the real one, so
+            // the reported experience was "it is not clear I am supposed to hit
+            // Convert". Of course it was not. The app had said it was finished.
+            //
+            // This names the state you are in rather than a task you completed,
+            // and then names the next action, which nothing on this screen used
+            // to do.
+            Text("Ready to convert")
+                .font(Tokens.Font.rowTitle)
+                .tracking(Tokens.Tracking.forSize(Tokens.TypeScale.rowTitle))
+                .foregroundStyle(Tokens.Palette.textPrimary)
 
-            Text(plan.comfortNote)
+            Text(readyDetail(plan))
                 .font(Tokens.Font.caption)
                 .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
                 .fixedSize(horizontal: false, vertical: true)

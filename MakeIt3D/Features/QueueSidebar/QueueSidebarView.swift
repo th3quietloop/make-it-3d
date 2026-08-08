@@ -29,7 +29,7 @@ struct QueueSidebarView: View {
                             ForEach(model.finished) { row($0) }
                         } header: {
                             QueueSectionHeader(
-                                title: "Finished",
+                                title: "Converted",
                                 count: model.finished.count,
                                 trailing: model.finished.isEmpty ? nil : "Clear"
                             ) {
@@ -42,18 +42,22 @@ struct QueueSidebarView: View {
                         ForEach(model.upNext) { row($0) }
                         addMoreButton
                     } header: {
-                        // With nothing finished, everything in the list is up
-                        // next by definition, and MOVIES two rows above is
-                        // already labelling it. A header that distinguishes one
-                        // section from nothing is a second name for the pane.
-                        if !model.finished.isEmpty {
-                            QueueSectionHeader(
-                                title: "Up next",
-                                count: model.upNext.count,
-                                trailing: nil,
-                                action: nil
-                            )
-                        }
+                        // Always shown, even when it is the only section.
+                        //
+                        // This was cut last round as redundant with MOVIES two
+                        // rows above, which was optimising for repetition and
+                        // deleting the only word in the sidebar that implied
+                        // unfinished work. "To convert" is a state, "Movies" is
+                        // a category, and the reported experience was not
+                        // knowing that anything was still waiting. It also uses
+                        // the same verb as the button, so the list and the
+                        // button say the same word.
+                        QueueSectionHeader(
+                            title: "To convert",
+                            count: model.upNext.count,
+                            trailing: nil,
+                            action: nil
+                        )
                     }
                 }
                 .padding(.bottom, Tokens.Space.m)

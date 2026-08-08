@@ -17,8 +17,10 @@ enum PreviewMode: Int, CaseIterable, Identifiable, Sendable {
         switch self {
         case .source: return "Source"
         case .depth: return "Depth"
-        case .stereo: return "Stereo"
-        case .wiggle: return "Wiggle"
+        // Named for what you see, not for the technique. "Wiggle" is the
+        // most useful mode in the app and told a first time user nothing.
+        case .stereo: return "3D"
+        case .wiggle: return "Compare eyes"
         }
     }
 
