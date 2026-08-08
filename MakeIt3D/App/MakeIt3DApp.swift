@@ -84,6 +84,21 @@ final class MakeIt3DAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         Task { @MainActor in DockProgress.shared.fraction = nil }
     }
+
+    /// Files opened from outside the app.
+    ///
+    /// This covers Open With, double clicking a video whose default app is this
+    /// one, and dropping files on the Dock icon. Without it those three did
+    /// nothing at all: the app came to the front and ignored the file, which
+    /// reads as a hang rather than an unsupported gesture. Dragging onto the
+    /// window, the file picker, and launch arguments all worked, so the gap was
+    /// invisible from inside the app and obvious from the Finder.
+    @MainActor
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let model else { return }
+        model.add(urls: urls)
+        NSApp.activate(ignoringOtherApps: true)
+    }
 }
 
 /// The keyboard map, in the menu bar, so every shortcut is discoverable rather
