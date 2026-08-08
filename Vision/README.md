@@ -71,8 +71,10 @@ Nothing here is an impression. Every line is a number.
 | Frame alignment, two minutes | `check-alignment` | 3600 frames, 0 drift, tolerance 0 |
 | Compositor pairing | `check-pairing` | 300 frames, 300 exact, 0 approximate |
 | Depth levels survive the colour path | `check-pairing` | mean 0.038 levels of 255 |
-| Alignment through the real player | app self test | 360 frames checked, 0 mismatched, three runs |
-| Pairing key in the player | app self test | 360 by buffer identity, 0 by time |
+| Alignment through the real player | app self test | 361 frames checked, 0 mismatched |
+| Pairing key in the player | app self test | 361 by buffer identity, 0 by time |
+| Eyes identical at zero strength | app self test | 0.0000 levels, best shift 0 px |
+| Eyes differ at the film's strength | app self test | 1.823 levels, best shift 9 px |
 | Dial latency | app self test | worst 1 display frame over 47 changes |
 | Warp cost at 1080p | app self test | 0.17 ms mean, 0.77 ms worst |
 | Warp cost at 4K | app self test | 0.24 ms mean, 2.63 ms worst, against an 11.0 ms budget |
@@ -118,6 +120,38 @@ binary is not.
 **If the device measurement says this does not hold**, Route B is still open and
 most of the work carries over: the warp, the format, the pairing and the checks
 are all independent of how the eye textures reach the eyes.
+
+### Measure pixels, not bookkeeping
+
+Three times on this project something looked right and was not: the stereo sign
+was inverted and the render looked fine, a colour frame was paired with a
+neighbour's depth while the counters read 360 exact, and the two eyes differed
+in scale by the overscan factor. Every time, the check that should have caught
+it was measuring the pipeline's own bookkeeping rather than the pixels.
+
+So the gates that matter render something and measure it. To find out whether
+they actually work, the stereo was flattened on purpose, with the eye factor
+forced to zero for both eyes. The result:
+
+```
+FAIL  Near content pops forward:                separation +0.00 px
+FAIL  At the film's own strength the eyes differ: 0.000 levels, best shift 0 px
+FAIL  More strength separates the eyes further:   0.000 against 0.000
+PASS  Colour and depth stay aligned:              0 mismatched of 362
+PASS  Pairing is exact, not approximate:          0 near, 0 missed
+PASS  The screen has a per eye material:          per eye, camera index switch
+PASS  The warp fits inside a video frame:         0.30 ms against 11.0 ms
+PASS  The dial is visible within one frame:       worst 1 display frame
+PASS  Frame rate holds while the dial moves:      119.7 fps
+```
+
+Six counters reading PASS over a completely flat picture. One of them was
+called "Both eyes are being synthesized", which that run proved was a lie: it
+checks that a material loaded, not that two pictures exist. It is now named for
+what it does.
+
+The build gate caught this too, before the app finished compiling, which is why
+producing the flattened build at all required deliberately bypassing it.
 
 ### Pairing by buffer identity, not by timestamp
 

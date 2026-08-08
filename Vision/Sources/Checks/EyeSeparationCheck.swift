@@ -18,6 +18,13 @@ import Metal
 /// should have caught it was measuring the pipeline's own bookkeeping instead
 /// of the pixels that came out.
 ///
+/// This was verified by breaking it on purpose. With the eye factor forced to
+/// zero for both eyes, so the picture is flat, the three checks here fail and
+/// so do the three sign convention ones, while every counter based check in the
+/// report goes on reading PASS: pairing exact, frames aligned, warp inside
+/// budget, dial latency one frame, frame rate held. A gate nobody has watched
+/// fail is a gate nobody knows works.
+///
 /// So this measures pixels, on the frame that is actually playing, through the
 /// real renderer, at three strengths:
 ///

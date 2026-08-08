@@ -200,9 +200,14 @@ enum SelfTest {
                 && pairing.missingDepthFrames == 0,
             detail: "\(pairing.nearMatches) near, \(pairing.misses) missed"
         )
+        // Named for what it actually checks, which is that a per eye material
+        // loaded. It was called "Both eyes are being synthesized" until the
+        // stereo was deliberately flattened and this line went on reading PASS
+        // over a completely flat picture. Whether there are two pictures is
+        // answered by the eye separation check above, from pixels.
         verdict(
             &lines,
-            name: "Both eyes are being synthesized",
+            name: "The screen has a per eye material",
             passed: model.screenMaterial == .perEye,
             detail: model.screenMaterial.summary
         )
