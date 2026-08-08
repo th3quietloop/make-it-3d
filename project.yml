@@ -25,8 +25,8 @@ targets:
         CODE_SIGN_IDENTITY: "Developer ID Application"
         CODE_SIGN_STYLE: Manual
         DEVELOPMENT_TEAM: 8J4SDPB6A2
-        MARKETING_VERSION: "1.2.2"
-        CURRENT_PROJECT_VERSION: "5"
+        MARKETING_VERSION: "1.2.3"
+        CURRENT_PROJECT_VERSION: "6"
         # Required by notarization. Nothing in this app needs an exception:
         # no JIT, no unsigned memory, no library validation to disable.
         ENABLE_HARDENED_RUNTIME: YES
