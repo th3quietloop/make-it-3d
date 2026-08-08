@@ -85,10 +85,24 @@ enum AutoTune {
         let effectiveTarget = target * (0.35 + 0.65 * confidence)
         let solved = binding > 0 ? effectiveTarget / binding : EngineTuning.Strength.standard.scale
 
-        // Kept inside the range the presets already cover, so Auto never
-        // produces something the three buttons cannot express or undo.
+        // The ceiling is Standard, not Deep.
+        //
+        // Deep was the ceiling until a full length film went through and came
+        // back with visible cut out edges around people. That artifact is the
+        // warp tearing where the depth map cliffs from subject to background,
+        // and its width scales directly with disparity, so a third less
+        // strength is a third less tear on exactly the shots that show it.
+        //
+        // The tuner is also the wrong thing to trust at the top of the range.
+        // High confidence means the shot has a lot of depth in it, which
+        // usually means a lot of depth discontinuity, which is precisely when
+        // pushing hard hurts most. Until the disparity is feathered across
+        // those edges, confidence should buy less than it did.
+        //
+        // Deep is still one click away in Custom for anyone who wants the pop
+        // and does not mind the edges.
         let strength = min(max(solved, EngineTuning.Strength.soft.scale * 0.6),
-                           EngineTuning.Strength.deep.scale)
+                           EngineTuning.Strength.standard.scale)
 
         return Result(
             strength: strength,
