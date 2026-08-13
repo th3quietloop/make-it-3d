@@ -224,6 +224,10 @@ final class SpatialWriter: SpatialVideoWriting {
         // frames into memory. A feature length file would otherwise balloon.
         var spins = 0
         while !videoInput.isReadyForMoreMediaData {
+            if Task.isCancelled {
+                cancel()
+                throw CancellationError()
+            }
             if writer.status == .failed { throw mapWriterError() }
             Thread.sleep(forTimeInterval: 0.002)
             spins += 1
@@ -356,6 +360,10 @@ final class SpatialWriter: SpatialVideoWriting {
 
         while !audioDrained {
             while !audioInput.isReadyForMoreMediaData {
+                if Task.isCancelled {
+                    cancel()
+                    throw CancellationError()
+                }
                 if writer.status == .failed { throw mapWriterError() }
                 Thread.sleep(forTimeInterval: 0.002)
             }

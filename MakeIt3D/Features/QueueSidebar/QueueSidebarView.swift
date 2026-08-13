@@ -10,64 +10,106 @@ import AppKit
 ///
 /// Finished sits on top on purpose. With the queue running unattended, the
 /// state you come back to is a pile of results, and results are what you came
-/// back for. The row being converted is pinned above both so a long run never
-/// hides its own progress.
+/// back for. During a run, Converting and Up Next stay above the scroll so a
+/// long queue never hides either the live progress or the next promise.
 struct QueueSidebarView: View {
     @Bindable var model: AppModel
     let isTargeted: Bool
 
+    @State private var searchText = ""
+    @State private var filter: QueueFilter = .all
+    @State private var convertedExpanded = true
+    @State private var dropTarget: QueueDropTarget?
+
+    private var isReorderEnabled: Bool {
+        filter == .all && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var pinnedActive: Conversion? {
+        guard model.queueRunning else { return nil }
+        return model.activeConversion
+    }
+
+    private var pinnedNext: Conversion? {
+        guard model.queueRunning else { return nil }
+        return model.nextWaitingConversion
+    }
+
+    private var pinnedIDs: Set<Conversion.ID> {
+        Set([pinnedActive?.id, pinnedNext?.id].compactMap { $0 })
+    }
+
+    private var visibleFinished: [Conversion] {
+        model.finished.filter { filter.includes($0, searchText: searchText) }
+    }
+
+    private var visibleWork: [Conversion] {
+        model.upNext.filter {
+            !pinnedIDs.contains($0.id) && filter.includes($0, searchText: searchText)
+        }
+    }
+
+    private var failedCount: Int {
+        model.conversions.reduce(into: 0) { count, conversion in
+            if case .failed = conversion.status { count += 1 }
+        }
+    }
+
+    private var hasVisibleScrollableRows: Bool {
+        !visibleFinished.isEmpty || !visibleWork.isEmpty
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // No pane header. MOVIES and TO CONVERT sat two rows apart naming
-            // the same one list, and only one of them said anything: TO CONVERT
-            // is a state, MOVIES is a category. The selection count it used to
-            // carry moved into the section header, which is where the rows it
-            // counts actually live.
+            QueueSidebarControls(searchText: $searchText, filter: $filter)
+            Hairline()
+
+            QueueRunSummary(
+                summaryText: model.queueSummaryText,
+                outputEstimateText: model.queueOutputEstimateText,
+                phase: model.queuePhase,
+                onPauseAfterCurrent: model.pauseAfterCurrent,
+                onStopAfterCurrent: model.stopAfterCurrent,
+                onResume: model.resumeQueue,
+                onStopNow: model.stopNow
+            )
+
+            if pinnedActive != nil || pinnedNext != nil {
+                Hairline()
+                pinnedWork
+            }
+
+            Hairline()
+
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    if !model.finished.isEmpty {
-                        Section {
-                            ForEach(model.finished) { row($0) }
-                        } header: {
-                            QueueSectionHeader(
-                                title: "Converted",
-                                count: model.finished.count,
-                                trailing: model.finished.isEmpty ? nil : "Clear"
-                            ) {
-                                model.clearFinished()
-                            }
-                        }
-                    }
+                    convertedSection
+                    workSection
 
-                    Section {
-                        ForEach(model.upNext) { row($0) }
-                        addMoreButton
-                    } header: {
-                        // Always shown, even when it is the only section.
-                        //
-                        // This was cut last round as redundant with MOVIES two
-                        // rows above, which was optimising for repetition and
-                        // deleting the only word in the sidebar that implied
-                        // unfinished work. "To convert" is a state, "Videos" is
-                        // a category, and the reported experience was not
-                        // knowing that anything was still waiting. It also uses
-                        // the same verb as the button, so the list and the
-                        // button say the same word.
-                        QueueSectionHeader(
-                            title: "To convert",
-                            count: model.upNext.count,
-                            trailing: model.selectedIDs.count > 1
-                                ? "\(model.selectedIDs.count) selected" : nil,
-                            action: model.selectedIDs.count > 1 ? {} : nil
+                    if !hasVisibleScrollableRows {
+                        QueueEmptyResults(
+                            hasSearch: !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                            filter: filter,
+                            hasPinnedWork: !pinnedIDs.isEmpty
                         )
                     }
                 }
                 .padding(.top, Tokens.Space.xs)
                 .padding(.bottom, Tokens.Space.m)
             }
-            .scrollEdgeFade(top: true, bottom: false)
+            .scrollEdgeFade(top: true, bottom: true)
+            .frame(maxHeight: .infinity)
 
-            Spacer(minLength: 0)
+            if let notice = model.priorityNotice {
+                Hairline()
+                QueuePriorityNotice(
+                    content: notice,
+                    onDismiss: model.dismissPriorityNotice
+                )
+            }
+
+            Hairline()
+            QueueStickyAddButton(action: model.chooseFiles)
         }
         .frame(minWidth: Tokens.Layout.sidebarMinWidth)
         .surfaceMaterial(.sidebar)
@@ -81,6 +123,115 @@ struct QueueSidebarView: View {
         // target state, which is a different message entirely.
         .focusable()
         .focusEffectDisabled()
+        .onAppear {
+            if model.queueRunning { convertedExpanded = false }
+        }
+        .onChange(of: model.queueRunning) { oldValue, newValue in
+            if !oldValue && newValue {
+                convertedExpanded = false
+            }
+        }
+        .onChange(of: filter) { _, newValue in
+            if newValue == .converted { convertedExpanded = true }
+            if newValue != .all { dropTarget = nil }
+        }
+        .onChange(of: searchText) { _, newValue in
+            if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                dropTarget = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pinnedWork: some View {
+        VStack(spacing: 0) {
+            if let active = pinnedActive {
+                QueueSectionHeader(title: "Converting", count: 1)
+                row(active, showsPosition: false, allowsDrag: false)
+            }
+
+            if let next = pinnedNext {
+                QueueSectionHeader(title: "Up next", count: 1)
+                if isReorderEnabled {
+                    dropTargetView(.before(next.id))
+                }
+                row(next, showsPosition: true, allowsDrag: isReorderEnabled)
+            }
+        }
+        .padding(.vertical, Tokens.Space.xxs)
+    }
+
+    @ViewBuilder
+    private var convertedSection: some View {
+        if !model.finished.isEmpty && (filter == .all || filter == .converted) {
+            Section {
+                if convertedExpanded {
+                    ForEach(visibleFinished) { conversion in
+                        row(conversion, showsPosition: false, allowsDrag: false)
+                    }
+                }
+            } header: {
+                QueueSectionHeader(
+                    title: "Converted",
+                    count: visibleFinished.count,
+                    isExpanded: $convertedExpanded,
+                    trailing: "Clear",
+                    action: { model.clearFinished() }
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var workSection: some View {
+        if filter != .converted {
+            Section {
+                ForEach(visibleWork) { conversion in
+                    QueueSidebarWorkItem(
+                        model: model,
+                        conversion,
+                        isReorderEnabled: isReorderEnabled,
+                        isDropTarget: dropTarget == .before(conversion.id),
+                        onDropTargeted: { targeted in
+                            updateDropTarget(.before(conversion.id), isTargeted: targeted)
+                        },
+                        onDrop: handleDrop,
+                        onTap: { handleTap(conversion) }
+                    )
+                    .id(conversion.id)
+                }
+
+                if isReorderEnabled, !model.queuedWaiting.isEmpty {
+                    dropTargetView(.end)
+                }
+            } header: {
+                QueueSectionHeader(
+                    title: filter == .failed ? "Failed" : "To convert",
+                    count: visibleWork.count,
+                    trailing: workHeaderActionTitle,
+                    action: workHeaderAction
+                )
+            }
+        }
+    }
+
+    private var workHeaderActionTitle: String? {
+        if canRetryAll, filter == .failed || (filter == .all && model.selectedIDs.count < 2) {
+            return "Retry all"
+        }
+        if model.selectedIDs.count > 1 { return "\(model.selectedIDs.count) selected" }
+        return nil
+    }
+
+    private var workHeaderAction: (() -> Void)? {
+        guard canRetryAll,
+              filter == .failed || (filter == .all && model.selectedIDs.count < 2)
+        else { return nil }
+        return { model.retryAllFailed() }
+    }
+
+    private var canRetryAll: Bool {
+        failedCount > 0 && model.queuePhase != .stopping
     }
 
     private var dragWake: some View {
@@ -94,15 +245,43 @@ struct QueueSidebarView: View {
 
     // MARK: Rows
 
-    private func row(_ conversion: Conversion) -> some View {
-        QueueRow(
+    @ViewBuilder
+    private func row(
+        _ conversion: Conversion,
+        showsPosition: Bool,
+        allowsDrag: Bool
+    ) -> some View {
+        QueueSidebarRowHost(
+            model: model,
             conversion: conversion,
-            isSelected: model.selectedIDs.contains(conversion.id),
-            isFocused: conversion.id == model.selectionID,
-            isMultiSelect: model.selectedIDs.count > 1
+            showsPosition: showsPosition,
+            allowsDrag: allowsDrag,
+            onTap: { handleTap(conversion) }
         )
-        .onTapGesture { handleTap(conversion) }
-        .contextMenu { rowMenu(conversion) }
+        .id(conversion.id)
+    }
+
+    private func dropTargetView(_ target: QueueDropTarget) -> some View {
+        QueueDropIndicator(isVisible: dropTarget == target)
+            .dropDestination(for: QueueDragPayload.self) { payloads, _ in
+                handleDrop(payloads, before: target.destinationID)
+            } isTargeted: { isTargeted in
+                updateDropTarget(target, isTargeted: isTargeted)
+            }
+    }
+
+    private func handleDrop(_ payloads: [QueueDragPayload], before destinationID: UUID?) -> Bool {
+        guard isReorderEnabled, let payload = payloads.first else { return false }
+        model.reorderQueued(ids: payload.ids, before: destinationID)
+        return true
+    }
+
+    private func updateDropTarget(_ target: QueueDropTarget, isTargeted: Bool) {
+        if isTargeted {
+            dropTarget = target
+        } else if dropTarget == target {
+            dropTarget = nil
+        }
     }
 
     /// Finder click semantics. Shift takes the run, command picks and chooses,
@@ -118,51 +297,177 @@ struct QueueSidebarView: View {
         }
     }
 
-    /// The way out of "what now". After a conversion lands, the next thing a
-    /// person wants is another video, and the only way to say so used to be a
-    /// plus in the toolbar at the opposite end of the window.
-    private var addMoreButton: some View {
-        Button {
-            model.chooseFiles()
-        } label: {
-            HStack(spacing: Tokens.Space.s) {
-                Image(systemName: "plus")
-                    .font(Tokens.Font.caption)
-                Text(model.conversions.isEmpty ? "Add videos" : "Add more videos")
-                    .font(Tokens.Font.body)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(Tokens.Palette.textSecondary)
-            .padding(.horizontal, Tokens.Space.m)
-            .frame(height: Tokens.Layout.queueRowHeight)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .pressable()
+}
+
+/// Hosts the before-row drop affordance beside the row that owns its changing
+/// eligibility. Keeping both inside this retained child prevents an early
+/// probing state from permanently hiding the insertion target.
+private struct QueueSidebarWorkItem: View {
+    @Bindable var model: AppModel
+    let conversion: Conversion
+    let isReorderEnabled: Bool
+    let isDropTarget: Bool
+    let onDropTargeted: (Bool) -> Void
+    let onDrop: ([QueueDragPayload], UUID?) -> Bool
+    let onTap: () -> Void
+
+    init(
+        model: AppModel,
+        _ conversion: Conversion,
+        isReorderEnabled: Bool,
+        isDropTarget: Bool,
+        onDropTargeted: @escaping (Bool) -> Void,
+        onDrop: @escaping ([QueueDragPayload], UUID?) -> Bool,
+        onTap: @escaping () -> Void
+    ) {
+        self.model = model
+        self.conversion = conversion
+        self.isReorderEnabled = isReorderEnabled
+        self.isDropTarget = isDropTarget
+        self.onDropTargeted = onDropTargeted
+        self.onDrop = onDrop
+        self.onTap = onTap
     }
 
-    @ViewBuilder
-    private func rowMenu(_ conversion: Conversion) -> some View {
-        if case .done(let url) = conversion.status {
-            Button("Send to Vision Pro") { model.share(url) }
-            Button("Show in Finder") { model.reveal(url) }
-            Button("Convert this again") { model.reconvert(conversion) }
-                .disabled(model.isConverting)
-            Divider()
-        }
-        if model.selectedIDs.count > 1, model.selectedIDs.contains(conversion.id) {
-            Button("Remove \(model.selectedIDs.count) videos") { model.removeSelected() }
-        } else {
-            Button("Remove") { model.remove(conversion) }
-                .disabled(conversion.status.isConverting)
+    var body: some View {
+        let canMove = conversion.canMoveInQueue
+        Group {
+            if isReorderEnabled && canMove {
+                QueueDropIndicator(isVisible: isDropTarget)
+                    .dropDestination(for: QueueDragPayload.self) { payloads, _ in
+                        onDrop(payloads, conversion.id)
+                    } isTargeted: { targeted in
+                        onDropTargeted(targeted)
+                    }
+            }
+
+            QueueSidebarRowHost(
+                model: model,
+                conversion: conversion,
+                showsPosition: true,
+                allowsDrag: isReorderEnabled,
+                onTap: onTap
+            )
         }
     }
 }
 
-/// A sticky section header, with an optional action on the right.
+/// Owns every state-dependent part of a lazy row. SwiftUI may keep a
+/// `LazyVStack` child with the same identity alive while probing and automatic
+/// planning finish. Reading the conversion here gives that retained child its
+/// own Observation dependency, so its badge, drag capability, and context menu
+/// become ready together.
+private struct QueueSidebarRowHost: View {
+    @Bindable var model: AppModel
+    let conversion: Conversion
+    let showsPosition: Bool
+    let allowsDrag: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        let canMove = conversion.canMoveInQueue
+        let priorityCandidates = model.priorityCandidates(for: conversion)
+        let canSkip = model.canSkip(conversion)
+        let canRetry = model.canRetry(conversion)
+        let position = showsPosition ? model.queuePosition(for: conversion) : nil
+        let queueRunning = model.queueRunning
+        let canPrioritize = model.canPrioritize(priorityCandidates)
+        let status = conversion.status
+        let selectedCount = model.selectedIDs.count
+        let isSelected = model.selectedIDs.contains(conversion.id)
+        let dragIDs = priorityCandidates.isEmpty
+            ? [conversion.id]
+            : priorityCandidates.map(\.id)
+
+        let content = QueueRow(
+            conversion: conversion,
+            position: position,
+            isSkippedThisRun: model.isSkippedInCurrentRun(conversion),
+            isSelected: isSelected,
+            isFocused: conversion.id == model.selectionID,
+            isMultiSelect: model.selectedIDs.count > 1
+        )
+        .onTapGesture(perform: onTap)
+        .contextMenu {
+            rowMenu(
+                canMove: canMove,
+                priorityCandidates: priorityCandidates,
+                canSkip: canSkip,
+                canRetry: canRetry,
+                queueRunning: queueRunning,
+                canPrioritize: canPrioritize,
+                status: status,
+                selectedCount: selectedCount,
+                isSelected: isSelected
+            )
+        }
+        .help(conversion.sourceURL.path)
+
+        if allowsDrag && canMove {
+            content.draggable(QueueDragPayload(ids: dragIDs))
+        } else {
+            content
+        }
+    }
+
+    @ViewBuilder
+    private func rowMenu(
+        canMove: Bool,
+        priorityCandidates: [Conversion],
+        canSkip: Bool,
+        canRetry: Bool,
+        queueRunning: Bool,
+        canPrioritize: Bool,
+        status: Conversion.Status,
+        selectedCount: Int,
+        isSelected: Bool
+    ) -> some View {
+        if canMove {
+            Button(
+                QueuePriorityCopy.actionTitle(
+                    count: priorityCandidates.count,
+                    queueRunning: queueRunning
+                )
+            ) {
+                model.prioritize(priorityCandidates)
+            }
+            .disabled(!canPrioritize)
+        }
+
+        if canSkip {
+            Button(status.isConverting ? "Skip Current Video" : "Skip This Run") {
+                model.skip(conversion)
+            }
+        }
+
+        if canRetry {
+            Button("Retry") { model.retry(conversion) }
+        }
+
+        if canMove || canSkip || canRetry {
+            Divider()
+        }
+        if case .done(let url) = status {
+            Button("Send to Vision Pro") { model.share(url) }
+            Button("Show in Finder") { model.reveal(url) }
+            Button("Convert this again") { model.reconvert(conversion) }
+                .disabled(queueRunning)
+            Divider()
+        }
+        if selectedCount > 1, isSelected {
+            Button("Remove \(selectedCount) videos") { model.removeSelected() }
+        } else {
+            Button("Remove") { model.remove(conversion) }
+                .disabled(status.isConverting)
+        }
+    }
+}
+
+/// A compact section header, with optional disclosure and trailing action.
 struct QueueSectionHeader: View {
     let title: String
     let count: Int
+    var isExpanded: Binding<Bool>?
     var trailing: String?
     var action: (() -> Void)?
 
@@ -170,16 +475,41 @@ struct QueueSectionHeader: View {
 
     var body: some View {
         HStack(spacing: Tokens.Space.xs) {
-            SectionLabel(text: title)
-            Text("\(count)")
-                .font(Tokens.Font.monoCaption)
-                .foregroundStyle(Tokens.Palette.textTertiary)
+            if let isExpanded {
+                Button {
+                    withAnimation(Tokens.Motion.panelSpring) {
+                        isExpanded.wrappedValue.toggle()
+                    }
+                } label: {
+                    HStack(spacing: Tokens.Space.xs) {
+                        Image(systemName: "chevron.right")
+                            .font(Tokens.Font.caption)
+                            .foregroundStyle(Tokens.Palette.textTertiary)
+                            .rotationEffect(.degrees(isExpanded.wrappedValue ? 90 : 0))
+                        SectionLabel(text: title)
+                        countLabel
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isExpanded.wrappedValue ? "Collapse \(title)" : "Expand \(title)")
+            } else {
+                SectionLabel(text: title)
+                countLabel
+            }
+
             Spacer()
-            if let trailing, let action {
-                Button(trailing, action: action)
-                    .buttonStyle(.plain)
-                    .font(Tokens.Font.caption)
-                    .foregroundStyle(isHovering ? Tokens.Palette.accent : Tokens.Palette.textTertiary)
+            if let trailing {
+                if let action {
+                    Button(trailing, action: action)
+                        .buttonStyle(.plain)
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(isHovering ? Tokens.Palette.accent : Tokens.Palette.textTertiary)
+                } else {
+                    Text(trailing)
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Palette.textTertiary)
+                }
             }
         }
         .padding(.horizontal, Tokens.Space.m)
@@ -191,10 +521,18 @@ struct QueueSectionHeader: View {
         // unpinning is what removes the need for a background at all.
         .onHover { isHovering = $0 }
     }
+
+    private var countLabel: some View {
+        Text("\(count)")
+            .font(Tokens.Font.monoCaption)
+            .foregroundStyle(Tokens.Palette.textTertiary)
+    }
 }
 
 struct QueueRow: View {
     let conversion: Conversion
+    let position: QueuePosition?
+    let isSkippedThisRun: Bool
     let isSelected: Bool
     /// The one row driving the stage. Distinct from selection, because a
     /// thirteen row selection still shows exactly one picture.
@@ -216,6 +554,10 @@ struct QueueRow: View {
             }
 
             Spacer(minLength: 0)
+
+            if let position {
+                QueuePositionBadge(position: position)
+            }
 
             // The finished row's whole point is getting the file to the
             // headset, so the action lives on the row rather than three clicks
@@ -293,7 +635,9 @@ struct QueueRow: View {
                 Text(conversion.probe?.displayDuration ?? "")
                     .font(Tokens.Font.monoCaption)
                     .foregroundStyle(Tokens.Palette.textSecondary)
-                if conversion.settingsChangedSinceExport {
+                if isSkippedThisRun {
+                    Chip(text: "Skipped this run")
+                } else if conversion.settingsChangedSinceExport {
                     Chip(text: "Settings changed")
                 }
             }
@@ -313,10 +657,14 @@ struct QueueRow: View {
 
         case .done:
             HStack(spacing: Tokens.Space.xs) {
-                Text("Ready to send")
-                    .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.textSecondary)
-                if conversion.settingsChangedSinceExport {
+                if isSkippedThisRun {
+                    Chip(text: "Skipped this run")
+                } else {
+                    Text("Ready to send")
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Palette.textSecondary)
+                }
+                if conversion.settingsChangedSinceExport, !isSkippedThisRun {
                     Chip(text: "Settings changed")
                 }
             }
