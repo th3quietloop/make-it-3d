@@ -7,6 +7,11 @@ import UniformTypeIdentifiers
 @Observable
 @MainActor
 final class Conversion: Identifiable {
+    enum FailureKind: Equatable {
+        case intake
+        case conversion
+    }
+
     enum Status: Equatable {
         case probing
         case ready
@@ -28,6 +33,15 @@ final class Conversion: Identifiable {
             if case .ready = self { return true }
             return false
         }
+
+        /// A row that can move ahead without interrupting finished or in-flight
+        /// work. Files that are still being read cannot promise to be next yet.
+        var canMoveInQueue: Bool {
+            switch self {
+            case .ready: true
+            case .probing, .converting, .done, .failed: false
+            }
+        }
     }
 
     let id = UUID()
@@ -36,6 +50,7 @@ final class Conversion: Identifiable {
     var probe: SourceProbe?
     var thumbnail: CGImage?
     var report: VerificationReport?
+    var failureKind: FailureKind?
 
     /// The film broken into shots, each with settings solved for it. nil until
     /// Auto has been run on this file.
@@ -79,6 +94,10 @@ final class Conversion: Identifiable {
         return exportedTuning != tuning
     }
 
+    var canMoveInQueue: Bool {
+        planningProgress == nil && (status.canMoveInQueue || settingsChangedSinceExport)
+    }
+
     var displayName: String { sourceURL.deletingPathExtension().lastPathComponent }
 
     init(sourceURL: URL) {
@@ -86,10 +105,48 @@ final class Conversion: Identifiable {
     }
 }
 
+/// What this run is allowed to pick up. A selected run is a frozen promise;
+/// an all-ready run also admits videos added while it is working.
+enum QueueRunScope: Equatable {
+    case selectedSnapshot
+    case allReadyIncludingAdditions
+    case retryGroup
+}
+
+/// Queue controls are explicit states so Pause, Stop After Current, and Stop
+/// Now cannot collapse into one ambiguous Boolean.
+enum QueuePhase: Equatable {
+    case idle
+    case running
+    case pauseAfterCurrent
+    case stopAfterCurrent
+    case paused
+    case stopping
+}
+
+struct QueueWorkSummary: Equatable {
+    var totalCount = 0
+    var completedCount = 0
+    var waitingCount = 0
+    var preparingCount = 0
+    var activeCount = 0
+    var failedCount = 0
+    var skippedCount = 0
+    var knownRemainingSeconds: Double = 0
+    var unknownTimeCount = 0
+    var knownOutputBytes: Int64 = 0
+    var unknownSizeCount = 0
+}
+
 /// The root of the app: the queue, the selection, and the settings.
 @Observable
 @MainActor
 final class AppModel {
+
+    typealias ConversionRunner = @Sendable (
+        ConversionRequest,
+        @escaping @Sendable (ConversionEvent) -> Void
+    ) async -> Void
 
     var conversions: [Conversion] = []
 
@@ -104,27 +161,55 @@ final class AppModel {
     /// Where a shift click measures from.
     private var selectionAnchorID: Conversion.ID?
 
-    /// True while the queue is working through everything that is ready.
-    private(set) var queueRunning = false
+    private(set) var queuePhase: QueuePhase = .idle
 
-    /// Anything added while the queue is running joins the run rather than
-    /// sitting there waiting to be noticed.
-    var keepGoingAutomatically = true
+    var queueRunning: Bool { queuePhase != .idle }
+    var queuePaused: Bool { queuePhase == .paused }
+    var pauseRequested: Bool { queuePhase == .pauseAfterCurrent }
+    var stopAfterCurrentRequested: Bool { queuePhase == .stopAfterCurrent }
+
+    /// Persistent confirmation for the last priority change. Unlike a toast,
+    /// this remains visible until dismissed or the prioritised work begins.
+    var priorityNotice: QueuePriorityNoticeContent?
+    private var priorityNoticeIDs: Set<Conversion.ID> = []
 
     // MARK: Queue sections
 
     /// Converted. These are done with the pipeline and waiting to go to the
     /// headset, so they are not "queue" in any sense the word carries.
-    var finished: [Conversion] { conversions.filter(\.status.isDone) }
+    var finished: [Conversion] {
+        conversions.filter { $0.status.isDone && !$0.settingsChangedSinceExport }
+    }
 
     /// Everything still to do, including failures, which belong with the work
-    /// rather than with the results.
-    var upNext: [Conversion] { conversions.filter { !$0.status.isDone } }
+    /// rather than with the results. The active conversion stays at the top of
+    /// this section; prioritising another row means "next", never "interrupt".
+    var upNext: [Conversion] {
+        let unfinished = conversions.filter { !$0.status.isDone || $0.settingsChangedSinceExport }
+        guard let active = unfinished.first(where: { $0.status.isConverting }) else {
+            return unfinished
+        }
+        return [active] + unfinished.filter { $0.id != active.id }
+    }
 
     /// Rows the queue would pick up on its own.
     var readyToConvert: [Conversion] {
-        conversions.filter { $0.status.isReady || $0.settingsChangedSinceExport }
+        conversions.filter {
+            $0.planningProgress == nil
+                && ($0.status.isReady || $0.settingsChangedSinceExport)
+        }
     }
+
+    /// Ready rows in their true execution order. This is the source for queue
+    /// positions, priority groups, and internal drag-and-drop reordering.
+    var queuedWaiting: [Conversion] {
+        conversions.filter(\.canMoveInQueue)
+    }
+
+    /// The same order the sidebar presents. Shift-selection follows this list,
+    /// so pinning the active row cannot make the selected range disagree with
+    /// what is visibly between the two clicks.
+    var displayedConversions: [Conversion] { finished + upNext }
 
     /// What the user has actually picked out.
     var selectedConversions: [Conversion] {
@@ -135,7 +220,17 @@ final class AppModel {
     /// what Convert acts on, because a button that says one thing and does
     /// another is worse than a button that does nothing.
     var selectedReady: [Conversion] {
-        selectedConversions.filter { $0.status.isReady || $0.settingsChangedSinceExport }
+        selectedConversions.filter {
+            $0.planningProgress == nil
+                && ($0.status.isReady || $0.settingsChangedSinceExport)
+        }
+    }
+
+    var failedConversions: [Conversion] {
+        conversions.filter { conversion in
+            if case .failed = conversion.status { return true }
+            return false
+        }
     }
 
     /// True when there is more work in the list than the user has selected, so
@@ -184,7 +279,32 @@ final class AppModel {
     /// Filename pattern for exports. `{name}` is replaced with the source name.
     var filenamePattern: String = "{name}_spatial"
 
-    private var conversionTask: Task<Void, Never>?
+    private struct QueueRunContext {
+        let scope: QueueRunScope
+        var admittedIDs: Set<Conversion.ID>
+        var completedIDs: Set<Conversion.ID> = []
+        var failedIDs: Set<Conversion.ID> = []
+        var skippedIDs: Set<Conversion.ID> = []
+    }
+
+    private enum ActiveCancellation {
+        case stop(attempt: UUID)
+        case skip(attempt: UUID)
+
+        var attempt: UUID {
+            switch self {
+            case .stop(let attempt), .skip(let attempt): attempt
+            }
+        }
+    }
+
+    private var runContext: QueueRunContext?
+    private var queueDriverTask: Task<Void, Never>?
+    private var activePipelineTask: Task<Void, Never>?
+    private var activeAttemptID: UUID?
+    private var activeCancellation: ActiveCancellation?
+    private let conversionRunner: ConversionRunner
+    private let systemFeedbackEnabled: Bool
 
     var selection: Conversion? {
         guard let selectionID else { return nil }
@@ -206,13 +326,156 @@ final class AppModel {
     /// Progress across everything in this run, so the button means the same
     /// thing whether one file is converting or five.
     var queueProgress: Double {
-        guard case .converting(let fraction, _)? = activeConversion?.status else { return 0 }
-        return fraction
+        guard let context = runContext, !context.admittedIDs.isEmpty else {
+            guard case .converting(let fraction, _)? = activeConversion?.status else { return 0 }
+            return fraction
+        }
+
+        let resolved = context.completedIDs
+            .union(context.failedIDs)
+            .union(context.skippedIDs)
+            .count
+        let activeFraction: Double
+        if case .converting(let fraction, _)? = activeConversion?.status {
+            activeFraction = fraction
+        } else {
+            activeFraction = 0
+        }
+        return min(Double(resolved) + activeFraction, Double(context.admittedIDs.count))
+            / Double(context.admittedIDs.count)
+    }
+
+    var currentRunScope: QueueRunScope? { runContext?.scope }
+
+    var nextWaitingConversion: Conversion? {
+        queuedWaiting.first { conversion in
+            guard let context = runContext else { return true }
+            return context.admittedIDs.contains(conversion.id)
+                && !context.skippedIDs.contains(conversion.id)
+        }
+    }
+
+    func isInCurrentRun(_ conversion: Conversion) -> Bool {
+        runContext?.admittedIDs.contains(conversion.id) == true
+    }
+
+    func isSkippedInCurrentRun(_ conversion: Conversion) -> Bool {
+        runContext?.skippedIDs.contains(conversion.id) == true
+    }
+
+    func queuePosition(for conversion: Conversion) -> QueuePosition? {
+        let ordered: [Conversion]
+        if let context = runContext {
+            ordered = queuedWaiting.filter {
+                context.admittedIDs.contains($0.id) && !context.skippedIDs.contains($0.id)
+            }
+        } else {
+            ordered = queuedWaiting
+        }
+        guard let index = ordered.firstIndex(where: { $0.id == conversion.id }) else { return nil }
+        return index == 0 ? .next : .numbered(index + 1)
+    }
+
+    var queueWorkSummary: QueueWorkSummary {
+        let ids = runContext?.admittedIDs ?? Set(upNext.map(\.id))
+        var summary = QueueWorkSummary()
+        summary.totalCount = ids.count
+
+        for conversion in conversions where ids.contains(conversion.id) {
+            if runContext?.skippedIDs.contains(conversion.id) == true {
+                summary.skippedCount += 1
+                continue
+            }
+            if runContext?.failedIDs.contains(conversion.id) == true {
+                summary.failedCount += 1
+                continue
+            }
+            if runContext?.completedIDs.contains(conversion.id) == true {
+                summary.completedCount += 1
+                continue
+            }
+
+            let isChangedExport = conversion.settingsChangedSinceExport
+            let isExplicitRedo = runContext?.scope == .retryGroup && conversion.status.isDone
+            if isChangedExport || isExplicitRedo {
+                summary.waitingCount += 1
+            } else {
+                switch conversion.status {
+                case .probing:
+                    summary.preparingCount += 1
+                case .ready:
+                    if conversion.planningProgress == nil {
+                        summary.waitingCount += 1
+                    } else {
+                        summary.preparingCount += 1
+                    }
+                case .converting:
+                    summary.activeCount += 1
+                case .done:
+                    if runContext == nil { summary.completedCount += 1 }
+                case .failed:
+                    summary.failedCount += 1
+                }
+            }
+
+            guard (isChangedExport || isExplicitRedo || !conversion.status.isDone),
+                  conversion.failureMessage == nil
+            else { continue }
+            if let probe = conversion.probe {
+                summary.knownOutputBytes = Self.addingWithoutOverflow(
+                    summary.knownOutputBytes,
+                    estimatedOutputBytes(for: probe)
+                )
+                if let measured = conversion.estimatedSecondsRemaining {
+                    summary.knownRemainingSeconds += measured
+                } else {
+                    summary.knownRemainingSeconds += Double(probe.estimatedFrameCount)
+                        / conversion.tuning.depthModel.measuredFramesPerSecond
+                }
+            } else {
+                summary.unknownSizeCount += 1
+                summary.unknownTimeCount += 1
+            }
+        }
+        return summary
+    }
+
+    var queueSummaryText: String {
+        let summary = queueWorkSummary
+        guard summary.totalCount > 0 else { return "No videos waiting" }
+
+        let countText: String
+        if runContext != nil {
+            let resolved = summary.completedCount + summary.failedCount + summary.skippedCount
+            let current = resolved + (summary.activeCount > 0 ? 1 : 0)
+            countText = "\(min(current, summary.totalCount)) of \(summary.totalCount)"
+        } else {
+            countText = summary.totalCount == 1 ? "1 video" : "\(summary.totalCount) videos"
+        }
+
+        guard summary.knownRemainingSeconds > 0 else { return countText }
+        let suffix = summary.unknownTimeCount > 0 ? "+" : ""
+        return "\(countText) • about \(Self.humanDuration(summary.knownRemainingSeconds))\(suffix)"
+    }
+
+    var queueOutputEstimateText: String? {
+        let summary = queueWorkSummary
+        guard summary.knownOutputBytes > 0 else { return nil }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let size = formatter.string(fromByteCount: summary.knownOutputBytes)
+        let suffix = summary.unknownSizeCount > 0 ? "+" : ""
+        return "About \(size)\(suffix) output"
     }
 
     static let supportedTypes: [UTType] = [.movie, .quickTimeMovie, .mpeg4Movie, .video]
 
-    init() {
+    init(
+        conversionRunner: @escaping ConversionRunner = ConversionController.run,
+        systemFeedbackEnabled: Bool = true
+    ) {
+        self.conversionRunner = conversionRunner
+        self.systemFeedbackEnabled = systemFeedbackEnabled
         checkModelAvailability()
         addLaunchArgumentFiles()
     }
@@ -256,6 +519,7 @@ final class AppModel {
             }
             let conversion = Conversion(sourceURL: url)
             conversions.append(conversion)
+            admitAddedConversionIfNeeded(conversion)
             probe(conversion)
             added.append(conversion)
         }
@@ -318,7 +582,10 @@ final class AppModel {
     ///   automatic pass does not narrate itself. The panel already shows
     ///   progress, and a toast for something nobody asked for is noise.
     func autoTune(_ conversion: Conversion, announce: Bool = true) {
-        guard conversion.planningProgress == nil else { return }
+        guard conversion.planningProgress == nil, !conversion.status.isConverting else { return }
+        // Planning begins now, not once probing catches up. Keeping this marker
+        // set prevents a just-probed row from starting with pre-plan settings.
+        conversion.planningProgress = 0
         guard conversion.probe != nil else {
             // Probing is async and a dropped file gets here first. Wait for it
             // rather than telling the user to try again, which is asking them
@@ -328,22 +595,34 @@ final class AppModel {
                     try? await Task.sleep(for: .milliseconds(250))
                     guard let self else { return }
                     if conversion.probe != nil {
-                        self.autoTune(conversion, announce: announce)
+                        self.runAutoTune(conversion, announce: announce)
                         return
                     }
                 }
+                guard let self else { return }
+                conversion.planningProgress = nil
+                self.scheduleQueueDriverIfNeeded()
             }
             return
         }
-        guard let probe = conversion.probe else { return }
+        runAutoTune(conversion, announce: announce)
+    }
 
-        conversion.planningProgress = 0
+    private func runAutoTune(_ conversion: Conversion, announce: Bool) {
+        guard let probe = conversion.probe else {
+            conversion.planningProgress = nil
+            scheduleQueueDriverIfNeeded()
+            return
+        }
         if announce {
             toasts.info("Looking at every shot", detail: "Sampling the film to work out its depth.")
         }
 
         Task { [weak self] in
-            defer { conversion.planningProgress = nil }
+            defer {
+                conversion.planningProgress = nil
+                self?.scheduleQueueDriverIfNeeded()
+            }
             do {
                 let estimator = try CoreMLDepthEstimator()
                 let tuning = conversion.tuning
@@ -400,6 +679,7 @@ final class AppModel {
 
     /// Puts the automatic answer back.
     func returnToAutomatic(_ conversion: Conversion) {
+        guard !conversion.status.isConverting else { return }
         guard let plan = conversion.shotPlan else { return }
         let time = CMTime(seconds: playhead, preferredTimescale: 600)
         guard let shot = plan.shot(at: time) else { return }
@@ -410,6 +690,7 @@ final class AppModel {
 
     /// Follows the playhead into a new shot and adopts its settings.
     func adoptShotSettings(at seconds: Double, for conversion: Conversion) {
+        guard !conversion.status.isConverting else { return }
         guard let plan = conversion.shotPlan else { return }
         let time = CMTime(seconds: seconds, preferredTimescale: 600)
         guard let shot = plan.shot(at: time) else { return }
@@ -442,6 +723,13 @@ final class AppModel {
         guard !ids.isEmpty else { return }
         conversions.removeAll { ids.contains($0.id) }
         selectedIDs.subtract(ids)
+        if var context = runContext {
+            context.admittedIDs.subtract(ids)
+            context.completedIDs.subtract(ids)
+            context.failedIDs.subtract(ids)
+            context.skippedIDs.subtract(ids)
+            runContext = context
+        }
         if let current = selectionID, ids.contains(current) {
             if let next = conversions.first {
                 selectionID = next.id
@@ -484,6 +772,123 @@ final class AppModel {
         remove(ids: [conversion.id])
     }
 
+    /// A right click inside a multi-selection acts on the movable part of that
+    /// selection. A right click outside it acts only on the clicked row.
+    func priorityCandidates(for clicked: Conversion) -> [Conversion] {
+        if selectedIDs.count > 1, selectedIDs.contains(clicked.id) {
+            return conversions.filter {
+                selectedIDs.contains($0.id) && $0.canMoveInQueue
+            }
+        }
+        return clicked.canMoveInQueue ? [clicked] : []
+    }
+
+    var selectedPriorityCandidates: [Conversion] {
+        conversions.filter { selectedIDs.contains($0.id) && $0.canMoveInQueue }
+    }
+
+    func canPrioritize(_ candidates: [Conversion]) -> Bool {
+        guard queuePhase != .stopAfterCurrent, queuePhase != .stopping else {
+            return false
+        }
+        let ordered = candidatesInQueueOrder(candidates.map(\.id))
+        guard !ordered.isEmpty else { return false }
+        let orderedIDs = ordered.map(\.id)
+        let prefixIDs = Array(queuedWaiting.prefix(ordered.count)).map(\.id)
+        let needsAdmission = runContext.map { context in
+            orderedIDs.contains { !context.admittedIDs.contains($0) }
+        } ?? false
+        return orderedIDs != prefixIDs || needsAdmission
+    }
+
+    func canMoveToTopOfQueue(_ conversion: Conversion) -> Bool {
+        canPrioritize([conversion])
+    }
+
+    func prioritizeSelection() {
+        prioritize(selectedPriorityCandidates)
+    }
+
+    /// Moves a group to the first runnable positions without interrupting the
+    /// active conversion. Their relative order, focus, and selection survive.
+    func prioritize(_ candidates: [Conversion]) {
+        let ordered = candidatesInQueueOrder(candidates.map(\.id))
+        guard canPrioritize(ordered) else { return }
+
+        let movingIDs = ordered.map(\.id)
+        let firstOther = queuedWaiting.first { !movingIDs.contains($0.id) }
+        reorderQueued(ids: movingIDs, before: firstOther?.id, announce: false)
+        admitToCurrentRun(movingIDs)
+
+        let content = QueuePriorityCopy.confirmation(
+            names: ordered.map(\.displayName),
+            queueRunning: queueRunning
+        )
+        priorityNotice = content
+        priorityNoticeIDs = Set(movingIDs)
+        toasts.info(content.title, detail: content.detail)
+        scheduleQueueDriverIfNeeded()
+    }
+
+    func moveToTopOfQueue(_ conversion: Conversion) {
+        prioritize([conversion])
+    }
+
+    /// Reorders only ready slots, leaving active, preparing, failed, and
+    /// converted rows exactly where they are. Passing nil appends the group.
+    func reorderQueued(
+        ids: [Conversion.ID],
+        before destinationID: Conversion.ID?,
+        announce: Bool = true
+    ) {
+        let moving = candidatesInQueueOrder(ids)
+        guard !moving.isEmpty else { return }
+        let movingIDs = Set(moving.map(\.id))
+        if let destinationID, movingIDs.contains(destinationID) { return }
+        let originalOrder = queuedWaiting.map(\.id)
+        var remaining = queuedWaiting.filter { !movingIDs.contains($0.id) }
+
+        let insertionIndex: Int
+        if let destinationID,
+           let target = remaining.firstIndex(where: { $0.id == destinationID }) {
+            insertionIndex = target
+        } else {
+            insertionIndex = remaining.endIndex
+        }
+        remaining.insert(contentsOf: moving, at: insertionIndex)
+        guard remaining.map(\.id) != originalOrder else { return }
+
+        // Build the reordered array off to the side, then publish it once.
+        // Replacing slots directly exposed transient duplicate IDs to SwiftUI
+        // (the moved reference appeared at its new index before disappearing
+        // from the old one), which could leave stale position badges behind.
+        var reordered = conversions
+        var iterator = remaining.makeIterator()
+        for index in reordered.indices where reordered[index].canMoveInQueue {
+            if let replacement = iterator.next() { reordered[index] = replacement }
+        }
+        conversions = reordered
+
+        if announce {
+            priorityNotice = QueuePriorityNoticeContent(
+                title: moving.count == 1 ? "Queue order updated" : "\(moving.count) videos reordered",
+                detail: "The position labels show the new order."
+            )
+            priorityNoticeIDs = movingIDs
+        }
+        scheduleQueueDriverIfNeeded()
+    }
+
+    func dismissPriorityNotice() {
+        priorityNotice = nil
+        priorityNoticeIDs = []
+    }
+
+    private func candidatesInQueueOrder(_ ids: [Conversion.ID]) -> [Conversion] {
+        let idSet = Set(ids)
+        return conversions.filter { idSet.contains($0.id) && $0.canMoveInQueue }
+    }
+
     /// Removes everything selected, in one go.
     ///
     /// A converting row is left alone rather than silently skipped without
@@ -508,6 +913,16 @@ final class AppModel {
         let removableIDs = Set(removable.map(\.id))
         conversions.removeAll { removableIDs.contains($0.id) }
         selectedIDs.subtract(removableIDs)
+        if var context = runContext {
+            context.admittedIDs.subtract(removableIDs)
+            context.completedIDs.subtract(removableIDs)
+            context.failedIDs.subtract(removableIDs)
+            context.skippedIDs.subtract(removableIDs)
+            runContext = context
+        }
+        if !priorityNoticeIDs.isDisjoint(with: removableIDs) {
+            dismissPriorityNotice()
+        }
         if let anchor = selectionAnchorID, removableIDs.contains(anchor) {
             selectionAnchorID = nil
         }
@@ -541,14 +956,14 @@ final class AppModel {
     /// Shift click: everything between the anchor and here.
     func extendSelection(to conversion: Conversion) {
         guard let anchor = selectionAnchorID ?? selectionID,
-              let start = conversions.firstIndex(where: { $0.id == anchor }),
-              let end = conversions.firstIndex(where: { $0.id == conversion.id })
+              let start = displayedConversions.firstIndex(where: { $0.id == anchor }),
+              let end = displayedConversions.firstIndex(where: { $0.id == conversion.id })
         else {
             select(conversion)
             return
         }
         let range = start <= end ? start...end : end...start
-        selectedIDs = Set(conversions[range].map(\.id))
+        selectedIDs = Set(displayedConversions[range].map(\.id))
         focus(conversion)
     }
 
@@ -583,55 +998,231 @@ final class AppModel {
 
     // MARK: Running the queue
 
-    /// Converts everything that is ready, one after another.
-    ///
-    /// The judgment loop is the point of this app, so the queue does not start
-    /// itself when a file lands. You look at the depth first, then you start
-    /// it. What the queue will not do is make you press Convert thirteen
-    /// times: once running, it works through the list on its own, and anything
-    /// added while it runs joins the end.
-    func startQueue(_ work: [Conversion]? = nil) {
-        guard conversionTask == nil else { return }
-        let batch = work ?? readyToConvert
-        guard !batch.isEmpty else { return }
+    private func startQueue(_ work: [Conversion], scope: QueueRunScope) {
+        guard queuePhase == .idle, queueDriverTask == nil, activePipelineTask == nil else { return }
+        guard !work.isEmpty else { return }
 
-        queueRunning = true
-        runningIDs = Set(batch.map(\.id))
-        let total = batch.count
-        if total > 1 {
-            toasts.info("Converting \(total) videos", detail: "They run one after another.")
+        runContext = QueueRunContext(scope: scope, admittedIDs: Set(work.map(\.id)))
+        queuePhase = .running
+        if work.count > 1 {
+            toasts.info("Converting \(work.count) videos", detail: "They run one after another.")
         }
+        scheduleQueueDriverIfNeeded()
+    }
 
-        conversionTask = Task { [weak self] in
-            while let self, self.queueRunning, let next = self.nextInRun() {
-                await self.convert(next)
-                guard !Task.isCancelled else { break }
-                if !self.keepGoingAutomatically { break }
-            }
-            guard let self else { return }
-            self.conversionTask = nil
-            self.runningIDs = []
-            let wasRunning = self.queueRunning
-            self.queueRunning = false
-            if wasRunning, total > 1 {
-                let done = self.finished.count
-                self.toasts.success("Queue finished", detail: "\(done) ready to send to the Vision Pro.")
-            }
+    private func admitAddedConversionIfNeeded(_ conversion: Conversion) {
+        guard var context = runContext,
+              context.scope == .allReadyIncludingAdditions,
+              queuePhase != .stopAfterCurrent,
+              queuePhase != .stopping
+        else { return }
+        context.admittedIDs.insert(conversion.id)
+        runContext = context
+    }
+
+    private func admitToCurrentRun(_ ids: [Conversion.ID]) {
+        guard var context = runContext,
+              queuePhase != .stopAfterCurrent,
+              queuePhase != .stopping
+        else { return }
+        context.admittedIDs.formUnion(ids)
+        context.completedIDs.subtract(ids)
+        context.skippedIDs.subtract(ids)
+        context.failedIDs.subtract(ids)
+        runContext = context
+    }
+
+    private func recordFailureInCurrentRun(_ id: Conversion.ID) {
+        guard var context = runContext, context.admittedIDs.contains(id) else { return }
+        context.failedIDs.insert(id)
+        runContext = context
+    }
+
+    private func recordCompletionInCurrentRun(_ id: Conversion.ID) {
+        guard var context = runContext, context.admittedIDs.contains(id) else { return }
+        context.completedIDs.insert(id)
+        context.failedIDs.remove(id)
+        context.skippedIDs.remove(id)
+        runContext = context
+    }
+
+    private func scheduleQueueDriverIfNeeded() {
+        guard queuePhase == .running,
+              queueDriverTask == nil,
+              activePipelineTask == nil,
+              runContext != nil
+        else { return }
+
+        queueDriverTask = Task { [weak self] in
+            await self?.driveQueue()
         }
     }
 
-    /// The batch this run is working through. Held as ids rather than a
-    /// snapshot array so a row removed mid run simply stops being found.
-    private var runningIDs: Set<Conversion.ID> = []
+    private func driveQueue() async {
+        while queuePhase == .running {
+            guard let next = nextInRun() else {
+                queueDriverTask = nil
+                if hasAdmittedPreparationInFlight { return }
+                finishRun(announce: true)
+                return
+            }
 
-    /// The next row of this run that still needs doing. Anything added while
-    /// the run is going joins it, which is what keepGoingAutomatically means.
+            await convert(next)
+
+            switch queuePhase {
+            case .running:
+                continue
+            case .pauseAfterCurrent:
+                queuePhase = .paused
+                queueDriverTask = nil
+                toasts.info("Queue paused", detail: "\(next.displayName) finished. Resume when you're ready.")
+                return
+            case .stopAfterCurrent:
+                queueDriverTask = nil
+                finishRun(announce: false)
+                toasts.info("Queue stopped", detail: "\(next.displayName) finished first.")
+                return
+            case .stopping:
+                queueDriverTask = nil
+                finishRun(announce: false)
+                toasts.info("Conversion stopped", detail: "The file is back in the queue, settings intact.")
+                return
+            case .paused, .idle:
+                queueDriverTask = nil
+                return
+            }
+        }
+        queueDriverTask = nil
+    }
+
     private func nextInRun() -> Conversion? {
-        if let next = readyToConvert.first(where: { runningIDs.contains($0.id) }) { return next }
-        guard keepGoingAutomatically else { return nil }
-        guard let extra = readyToConvert.first else { return nil }
-        runningIDs.insert(extra.id)
-        return extra
+        guard let context = runContext else { return nil }
+        return conversions.first { conversion in
+            guard context.admittedIDs.contains(conversion.id),
+                  !context.completedIDs.contains(conversion.id),
+                  !context.skippedIDs.contains(conversion.id),
+                  !context.failedIDs.contains(conversion.id),
+                  conversion.planningProgress == nil
+            else { return false }
+
+            if conversion.status.isReady || conversion.settingsChangedSinceExport {
+                return true
+            }
+            // An explicit redo deliberately starts from the existing .done
+            // state so cancellation or failure can restore its prior output.
+            return context.scope == .retryGroup && conversion.status.isDone
+        }
+    }
+
+    private var hasAdmittedPreparationInFlight: Bool {
+        guard let context = runContext else { return false }
+        return conversions.contains { conversion in
+            guard context.admittedIDs.contains(conversion.id),
+                  !context.skippedIDs.contains(conversion.id)
+            else { return false }
+            if case .probing = conversion.status { return true }
+            return conversion.planningProgress != nil
+        }
+    }
+
+    private func finishRun(announce: Bool) {
+        let completed = runContext?.completedIDs.count ?? 0
+        let failed = runContext?.failedIDs.count ?? 0
+        let skipped = runContext?.skippedIDs.count ?? 0
+        let total = runContext?.admittedIDs.count ?? 0
+
+        runContext = nil
+        queuePhase = .idle
+        queueDriverTask = nil
+        activePipelineTask = nil
+        activeAttemptID = nil
+        activeCancellation = nil
+
+        guard announce, total > 1 else { return }
+        var details = ["\(completed) ready to send"]
+        if failed > 0 { details.append("\(failed) failed") }
+        if skipped > 0 { details.append("\(skipped) skipped") }
+        toasts.success("Queue finished", detail: details.joined(separator: " • "))
+    }
+
+    func pauseAfterCurrent() {
+        guard queuePhase == .running else { return }
+        guard isConverting else {
+            queuePhase = .paused
+            queueDriverTask?.cancel()
+            queueDriverTask = nil
+            toasts.info("Queue paused")
+            return
+        }
+        queuePhase = .pauseAfterCurrent
+        toasts.info("Pausing after this video", detail: "The current conversion will finish safely.")
+    }
+
+    func stopAfterCurrent() {
+        guard queuePhase == .running || queuePhase == .pauseAfterCurrent else { return }
+        guard isConverting else {
+            finishRun(announce: false)
+            toasts.info("Queue stopped")
+            return
+        }
+        queuePhase = .stopAfterCurrent
+        toasts.info("Stopping after this video", detail: "The current conversion will finish safely.")
+    }
+
+    func resumeQueue() {
+        guard queuePhase == .paused
+                || queuePhase == .pauseAfterCurrent
+                || queuePhase == .stopAfterCurrent
+        else { return }
+        queuePhase = .running
+        toasts.info("Queue resumed")
+        scheduleQueueDriverIfNeeded()
+    }
+
+    func stopNow() {
+        guard queuePhase != .idle else { return }
+        queuePhase = .stopping
+
+        if let attempt = activeAttemptID, activePipelineTask != nil {
+            activeCancellation = .stop(attempt: attempt)
+            activePipelineTask?.cancel()
+            toasts.info(
+                "Stopping now",
+                detail: "The current depth pass may finish before partial output is cleaned up."
+            )
+        } else {
+            queueDriverTask?.cancel()
+            finishRun(announce: false)
+            toasts.info("Queue stopped")
+        }
+    }
+
+    func canSkip(_ conversion: Conversion) -> Bool {
+        guard let context = runContext,
+              context.admittedIDs.contains(conversion.id),
+              !context.skippedIDs.contains(conversion.id)
+        else { return false }
+        return conversion.canMoveInQueue || conversion.status.isConverting
+    }
+
+    /// Skipping is scoped to this run. A waiting row stays ready for the next
+    /// run; an active row cancels and cleans up before the driver advances.
+    func skip(_ conversion: Conversion) {
+        guard canSkip(conversion), var context = runContext else { return }
+        context.skippedIDs.insert(conversion.id)
+        runContext = context
+        if priorityNoticeIDs.contains(conversion.id) { dismissPriorityNotice() }
+
+        if conversion.status.isConverting,
+           let attempt = activeAttemptID,
+           activePipelineTask != nil {
+            activeCancellation = .skip(attempt: attempt)
+            activePipelineTask?.cancel()
+            toasts.info("Skipping \(conversion.displayName)", detail: "Cleaning up its partial output.")
+        } else {
+            toasts.info("Skipped \(conversion.displayName)", detail: "It remains ready for the next run.")
+            scheduleQueueDriverIfNeeded()
+        }
     }
 
     /// Generates the test clip and queues it, so someone with no video to hand
@@ -691,6 +1282,7 @@ final class AppModel {
     /// Changing a parameter re-renders from the cached depth, so this is fast
     /// and deliberately does not tell the preview the frame changed.
     func updateTuning(_ tuning: EngineTuning, for conversion: Conversion) {
+        guard !conversion.status.isConverting else { return }
         conversion.tuning = tuning
         if conversion.id == selectionID { refreshPreview(frameChanged: false) }
     }
@@ -742,6 +1334,7 @@ final class AppModel {
                 let thumbnailTime = CMTime(seconds: probe.duration.seconds * 0.25, preferredTimescale: 600)
                 conversion.probe = probe
                 conversion.status = .ready
+                conversion.failureKind = nil
 
                 if conversion.id == self?.selectionID {
                     self?.refreshPreview(frameChanged: true)
@@ -753,8 +1346,12 @@ final class AppModel {
                 ) {
                     conversion.thumbnail = image.value
                 }
+                self?.scheduleQueueDriverIfNeeded()
             } catch {
                 conversion.status = .failed(error.localizedDescription)
+                conversion.failureKind = .intake
+                self?.recordFailureInCurrentRun(conversion.id)
+                self?.scheduleQueueDriverIfNeeded()
             }
         }
     }
@@ -780,11 +1377,11 @@ final class AppModel {
     /// the model and the GPU are the bottleneck, so running two at once would
     /// make both slower and the progress meaningless.
     ///
-    /// This used to snapshot the list up front, so a file dropped in during a
-    /// long run sat there until the whole batch ended and someone noticed. The
-    /// runner now asks for the next ready row each time round, which is what
-    /// makes `keepGoingAutomatically` mean anything.
-    func convertAllReady() { startQueue(readyToConvert) }
+    /// An all-ready run admits later additions explicitly. A selected run keeps
+    /// its original scope unless the user deliberately prioritises another row.
+    func convertAllReady() {
+        startQueue(readyToConvert, scope: .allReadyIncludingAdditions)
+    }
 
     /// The Convert button. Acts on the selection, and only the selection.
     ///
@@ -793,19 +1390,69 @@ final class AppModel {
     /// videos". The label was honest about what the button did and the button
     /// was doing the wrong thing.
     func convertSelected() {
-        let work = selectedReady.isEmpty ? readyToConvert : selectedReady
-        startQueue(work)
+        guard !selectedReady.isEmpty else {
+            toasts.info("Nothing selected is ready to convert")
+            return
+        }
+        startQueue(selectedReady, scope: .selectedSnapshot)
     }
 
     /// Runs a finished row again, keeping the existing export. The user decides
     /// when they are done, not the button.
     func reconvert(_ conversion: Conversion) {
-        guard !isConverting, conversion.status.isDone else { return }
-        conversion.status = .ready
-        conversionTask = Task { [weak self] in
-            await self?.convert(conversion)
-            self?.conversionTask = nil
+        guard queuePhase == .idle, conversion.status.isDone else { return }
+        startQueue([conversion], scope: .retryGroup)
+    }
+
+    func canRetry(_ conversion: Conversion) -> Bool {
+        guard case .failed = conversion.status else { return false }
+        return queuePhase != .stopAfterCurrent && queuePhase != .stopping
+    }
+
+    func retry(_ conversion: Conversion) {
+        guard canRetry(conversion) else { return }
+        retry([conversion])
+    }
+
+    func retryAllFailed() {
+        retry(failedConversions)
+    }
+
+    private func retry(_ failed: [Conversion]) {
+        let ordered = conversions.filter { candidate in
+            failed.contains(where: { $0.id == candidate.id }) && canRetry(candidate)
         }
+        guard !ordered.isEmpty else { return }
+
+        var needsProbe: [Conversion] = []
+        for conversion in ordered {
+            conversion.report = nil
+            conversion.startedAt = nil
+            let kind = conversion.failureKind ?? (conversion.probe == nil ? .intake : .conversion)
+            conversion.failureKind = nil
+            if kind == .intake || conversion.probe == nil {
+                conversion.status = .probing
+                needsProbe.append(conversion)
+            } else {
+                conversion.status = .ready
+            }
+        }
+
+        if queuePhase == .idle {
+            startQueue(ordered, scope: .retryGroup)
+        } else {
+            admitToCurrentRun(ordered.map(\.id))
+            scheduleQueueDriverIfNeeded()
+        }
+
+        for conversion in needsProbe {
+            probe(conversion)
+            autoTune(conversion, announce: false)
+        }
+
+        toasts.info(
+            ordered.count == 1 ? "Retrying \(ordered[0].displayName)" : "Retrying \(ordered.count) videos"
+        )
     }
 
     /// Roughly what the export will occupy, from the encoder's own bitrate
@@ -824,6 +1471,11 @@ final class AppModel {
         let bitsPerPixel = 0.15
         let bitsPerSecond = Double(probe.width * probe.height) * probe.nominalFrameRate * bitsPerPixel
         return Int64(bitsPerSecond / 8 * probe.duration.seconds)
+    }
+
+    private static func addingWithoutOverflow(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? Int64.max : sum
     }
 
     private func freeBytesAtOutput() -> Int64? {
@@ -885,11 +1537,43 @@ final class AppModel {
     }
 
     private func convert(_ conversion: Conversion) async {
-        guard let probe = conversion.probe else { return }
-        guard hasRoom(for: probe) else { return }
+        let priorStatus = conversion.status
+        let priorReport = conversion.report
+
+        func restoreAfterUnsuccessfulAttempt(failed: Bool) {
+            if case .done = priorStatus {
+                conversion.status = priorStatus
+                conversion.report = priorReport
+            } else {
+                conversion.status = failed
+                    ? .failed("The conversion did not finish.")
+                    : .ready
+            }
+        }
+
+        guard let probe = conversion.probe else {
+            if case .done = priorStatus {
+                restoreAfterUnsuccessfulAttempt(failed: true)
+            } else {
+                conversion.status = .failed("The source file is not ready to convert.")
+            }
+            conversion.failureKind = .intake
+            recordFailureInCurrentRun(conversion.id)
+            return
+        }
+        guard hasRoom(for: probe) else {
+            if case .done = priorStatus {
+                restoreAfterUnsuccessfulAttempt(failed: true)
+            } else {
+                conversion.status = .failed("Not enough free space in \(outputFolder.lastPathComponent).")
+            }
+            conversion.failureKind = .conversion
+            recordFailureInCurrentRun(conversion.id)
+            return
+        }
         guard confirmSlowModel(for: conversion, probe: probe) else { return }
 
-        SystemNotifier.prepare()
+        if systemFeedbackEnabled { SystemNotifier.prepare() }
 
         let request = ConversionRequest(
             probe: probe,
@@ -901,33 +1585,64 @@ final class AppModel {
         conversion.startedAt = Date()
         conversion.status = .converting(fraction: 0, framesDone: 0)
         conversion.report = nil
+        conversion.failureKind = nil
+        if priorityNoticeIDs.contains(conversion.id) { dismissPriorityNotice() }
+
+        let attemptID = UUID()
+        activeAttemptID = attemptID
 
         // The pipeline runs off the main actor. Events come back onto it, so
         // the UI only ever sees a consistent snapshot.
-        let stream = AsyncStream<ConversionEvent> { continuation in
-            Task.detached {
-                await ConversionController.run(request) { event in
-                    continuation.yield(event)
-                }
+        let runner = conversionRunner
+        let (stream, continuation) = AsyncStream<ConversionEvent>.makeStream()
+        // This task is retained explicitly so Stop and Skip cancel the actual
+        // engine work. The runner itself is nonisolated async work, so it leaves
+        // the main actor while the UI continues consuming events here.
+        let pipelineTask = Task {
+            if Task.isCancelled {
+                continuation.yield(.cancelled)
                 continuation.finish()
+                return
             }
+            await runner(request) { event in
+                continuation.yield(event)
+            }
+            continuation.finish()
         }
+        activePipelineTask = pipelineTask
 
+        var receivedTerminalEvent = false
         for await event in stream {
+            guard activeAttemptID == attemptID else { continue }
+            let cancellationRequested = activeCancellation?.attempt == attemptID
+
             switch event {
             case .started:
-                conversion.status = .converting(fraction: 0, framesDone: 0)
+                if !cancellationRequested {
+                    conversion.status = .converting(fraction: 0, framesDone: 0)
+                }
 
             case .progress(let fraction, let framesDone):
-                conversion.status = .converting(fraction: fraction, framesDone: framesDone)
-                DockProgress.shared.fraction = fraction
+                if !cancellationRequested {
+                    conversion.status = .converting(fraction: fraction, framesDone: framesDone)
+                    DockProgress.shared.fraction = queueProgress
+                }
 
             case .finished(let report):
+                receivedTerminalEvent = true
+                if cancellationRequested {
+                    try? FileManager.default.removeItem(at: report.outputURL)
+                    restoreAfterUnsuccessfulAttempt(failed: false)
+                    conversion.startedAt = nil
+                    DockProgress.shared.fraction = nil
+                    break
+                }
                 conversion.report = report
                 conversion.exportedTuning = frozenTuning
                 conversion.status = .done(outputURL: report.outputURL)
                 conversion.startedAt = nil
                 DockProgress.shared.fraction = nil
+                recordCompletionInCurrentRun(conversion.id)
                 print(report.text)
                 writeReport(report, for: conversion)
 
@@ -939,49 +1654,73 @@ final class AppModel {
                 ) { [weak self] in
                     self?.share(url)
                 }
-                SystemNotifier.post(
-                    title: "\(conversion.displayName) is ready",
-                    body: "Make It 3D finished converting it to spatial video."
-                )
+                if systemFeedbackEnabled {
+                    SystemNotifier.post(
+                        title: "\(conversion.displayName) is ready",
+                        body: "Make It 3D finished converting it to spatial video."
+                    )
+                }
 
             case .failed(let message):
-                conversion.status = .failed(message)
+                receivedTerminalEvent = true
+                if cancellationRequested {
+                    restoreAfterUnsuccessfulAttempt(failed: false)
+                } else if case .done = priorStatus {
+                    restoreAfterUnsuccessfulAttempt(failed: true)
+                } else {
+                    conversion.status = .failed(message)
+                }
+                conversion.failureKind = cancellationRequested ? nil : .conversion
                 conversion.startedAt = nil
                 DockProgress.shared.fraction = nil
+                if cancellationRequested { break }
+                recordFailureInCurrentRun(conversion.id)
                 toasts.failure("Couldn't convert \(conversion.displayName)", detail: message)
-                SystemNotifier.post(
-                    title: "Couldn't convert \(conversion.displayName)",
-                    body: message
-                )
-                SystemNotifier.requestAttention()
+                if systemFeedbackEnabled {
+                    SystemNotifier.post(
+                        title: "Couldn't convert \(conversion.displayName)",
+                        body: message
+                    )
+                    SystemNotifier.requestAttention()
+                }
 
             case .cancelled:
-                // A cancelled row returns to Ready with its settings intact.
-                conversion.status = .ready
+                receivedTerminalEvent = true
+                // New work returns to Ready. A re-export keeps its prior result.
+                restoreAfterUnsuccessfulAttempt(failed: false)
                 conversion.startedAt = nil
                 DockProgress.shared.fraction = nil
             }
+            if receivedTerminalEvent { break }
+        }
+
+        if let activePipelineTask { await activePipelineTask.value }
+        if !receivedTerminalEvent, activeAttemptID == attemptID {
+            if activeCancellation?.attempt == attemptID {
+                restoreAfterUnsuccessfulAttempt(failed: false)
+            } else {
+                let message = "The conversion worker ended without finishing the file."
+                if case .done = priorStatus {
+                    restoreAfterUnsuccessfulAttempt(failed: true)
+                } else {
+                    conversion.status = .failed(message)
+                }
+                conversion.failureKind = .conversion
+                recordFailureInCurrentRun(conversion.id)
+                toasts.failure("Couldn't convert \(conversion.displayName)", detail: message)
+            }
+            conversion.startedAt = nil
+            DockProgress.shared.fraction = nil
+        }
+        if activeAttemptID == attemptID {
+            activePipelineTask = nil
+            activeAttemptID = nil
+            activeCancellation = nil
         }
     }
 
     func cancelConversion() {
-        guard isConverting else { return }
-        queueRunning = false
-        conversionTask?.cancel()
-        conversionTask = nil
-        DockProgress.shared.fraction = nil
-
-        // Cancelling the Task tears down the event stream, so the `.cancelled`
-        // event that resets the row never arrives. The row stayed at
-        // .converting forever: a progress bar frozen at 1% with a live Cancel
-        // button under it, on a conversion that had already stopped. Reset the
-        // row here rather than hoping for an event from a stream that is gone.
-        for conversion in conversions where conversion.status.isConverting {
-            conversion.status = .ready
-            conversion.startedAt = nil
-        }
-
-        toasts.info("Conversion stopped", detail: "The file is back in the queue, settings intact.")
+        stopNow()
     }
 
     /// Opens the system share sheet, which is where AirDrop lives.

@@ -31,4 +31,4 @@ is original work and is covered by this repository's MIT licence.
 ## Apache License 2.0
 
 The full text is available at https://www.apache.org/licenses/LICENSE-2.0 and is reproduced
-in `Tools/modelconv/vda/LICENSE` and `Tools/modelconv/da3/LICENSE` in this repository.
+in `LICENSES/Apache-2.0.txt` in this repository.

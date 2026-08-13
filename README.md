@@ -36,6 +36,14 @@ xcodebuild -project MakeIt3D.xcodeproj -scheme MakeIt3D -configuration Debug -de
 open ./build/Build/Products/Debug/MakeIt3D.app
 ```
 
+Run the queue and scheduler tests without requiring a local signing identity:
+
+```bash
+xcodebuild -project MakeIt3D.xcodeproj -scheme MakeIt3D -configuration Debug \
+  -destination 'platform=macOS,arch=arm64' -derivedDataPath ./build \
+  CODE_SIGNING_ALLOWED=NO test
+```
+
 Launch it with `open`, not by running the binary directly. Running
 `MakeIt3D.app/Contents/MacOS/MakeIt3D` from a shell starts the process and installs
 its menu bar, but the window never appears, because the app is not registered
@@ -173,6 +181,24 @@ walk away. So:
   information; "40%" on a two hour film is anxiety.
 - Quitting mid conversion asks first. It is the one genuinely destructive,
   genuinely irreversible action in the app.
+
+## Working with long queues
+
+Queues with dozens of videos stay manageable without waiting for the current
+conversion to finish:
+
+- Right click a waiting video and choose **Move to Top of Queue**. During a run,
+  the action becomes **Convert Next** and never interrupts the active video.
+- Select several videos to prioritise or drag them as an ordered group.
+- Search by name or path, then filter the list to Waiting, Failed, or Converted.
+- The active video and the next video stay pinned above the scrolling list.
+- **Next**, **#2**, **#3**, and the remaining-time/output estimates show what the
+  queue will do before you leave it running.
+- Pause after the current video, stop after it, stop immediately, skip a video,
+  or retry failures from the sidebar or the Queue menu.
+
+**Convert Selected** is a fixed snapshot of the selected rows. **Convert All**
+also picks up videos added while that run is underway.
 
 ## How it works
 

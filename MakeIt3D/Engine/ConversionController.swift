@@ -47,8 +47,10 @@ enum ConversionController {
         _ request: ConversionRequest,
         onEvent: @escaping @Sendable (ConversionEvent) -> Void
     ) async {
+        var activeStage: Stage?
         do {
             let stage = try await Stage(request: request)
+            activeStage = stage
             onEvent(.started(totalFrames: request.probe.estimatedFrameCount))
 
             // The video model is used when it is present and asked for, and the
@@ -65,6 +67,7 @@ enum ConversionController {
             }
 
             if cancelled {
+                stage.abandon()
                 onEvent(.cancelled)
                 return
             }
@@ -79,8 +82,10 @@ enum ConversionController {
             onEvent(.finished(report))
 
         } catch is CancellationError {
+            activeStage?.abandon()
             onEvent(.cancelled)
         } catch {
+            activeStage?.abandon()
             onEvent(.failed(error.localizedDescription))
         }
     }

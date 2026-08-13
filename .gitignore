@@ -15,3 +15,7 @@ Tools/modelconv/da3/
 Tools/modelconv/*.log
 .build/
 MakeIt3D-*.zip
+.codex/
+/script/
+__pycache__/
+*.pyc

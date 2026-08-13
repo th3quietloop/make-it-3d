@@ -46,6 +46,12 @@ struct InspectorView: View {
                     }
                     Hairline()
                     customSection
+                        .disabled(conversion.status.isConverting)
+                        .help(
+                            conversion.status.isConverting
+                                ? "Depth settings are locked while this video converts."
+                                : ""
+                        )
                 }
                 .padding(Tokens.Space.m)
             }
@@ -330,28 +336,56 @@ struct InspectorView: View {
             switch conversion.status {
             case .done(let url) where !conversion.settingsChangedSinceExport:
                 SendToHeadsetButton(url: url)
-                HStack(spacing: Tokens.Space.m) {
-                    Button("Show file") { model.reveal(url) }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
-                        .pressable()
-                        .help("Reveal the converted file in the Finder.")
-                    // Was "Convert again", which reads as the forward action
-                    // on a screen where the forward action is a different
-                    // video. It said "again" and the user heard "next". The
-                    // redo now names the file it would redo, and the way to a
-                    // new one is Add more videos at the foot of the queue.
-                    // Quieter than Show file. This one spends the conversion
-                    // time again, and the two were sitting at equal weight.
-                    Button("Redo this one") { model.reconvert(conversion) }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Tokens.Palette.textTertiary)
-                        .pressable()
-                        .disabled(model.isConverting)
-                        .help("Convert \(conversion.displayName) again and keep both files.")
+                if model.queueRunning {
+                    queueControlMenu
+                } else {
+                    HStack(spacing: Tokens.Space.m) {
+                        Button("Show file") { model.reveal(url) }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
+                            .pressable()
+                            .help("Reveal the converted file in the Finder.")
+                        // Was "Convert again", which reads as the forward action
+                        // on a screen where the forward action is a different
+                        // video. It said "again" and the user heard "next". The
+                        // redo now names the file it would redo, and the way to a
+                        // new one is Add more videos at the foot of the queue.
+                        // Quieter than Show file. This one spends the conversion
+                        // time again, and the two were sitting at equal weight.
+                        Button("Redo this one") { model.reconvert(conversion) }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Tokens.Palette.textTertiary)
+                            .pressable()
+                            .help("Convert \(conversion.displayName) again and keep both files.")
+                    }
+                    .font(Tokens.Font.body)
+                    .frame(minHeight: Tokens.Layout.minTarget)
                 }
-                .font(Tokens.Font.body)
-                .frame(minHeight: Tokens.Layout.minTarget)
+
+            case .failed:
+                ConvertButton(
+                    title: "Retry",
+                    state: model.canRetry(conversion) ? .normal : .disabled
+                ) {
+                    model.retry(conversion)
+                }
+                .help("Retry \(conversion.displayName).")
+
+                if model.queueRunning {
+                    queueControlMenu
+                } else if failedCount > 1 {
+                    Button("Retry all \(failedCount) failed") { model.retryAllFailed() }
+                        .buttonStyle(.plain)
+                        .font(Tokens.Font.caption)
+                        .foregroundStyle(Tokens.Palette.accent)
+                        .pressable()
+                        .frame(minHeight: Tokens.Layout.minTarget)
+                }
+
+            case .converting:
+                ConvertButton(title: convertTitle, state: convertState) {}
+                    .help("Current batch progress.")
+                queueControlMenu
 
             default:
                 // Return commits, the way every export dialog in the
@@ -361,13 +395,8 @@ struct InspectorView: View {
                     model.convertSelected()
                 }
                 .help("Convert. Return.")
-                if model.isConverting {
-                    Button("Stop") { model.cancelConversion() }
-                        .buttonStyle(.plain)
-                        .font(Tokens.Font.body)
-                        .foregroundStyle(Tokens.Palette.textSecondary)
-                        .pressable()
-                        .frame(minHeight: Tokens.Layout.minTarget)
+                if model.queueRunning {
+                    queueControlMenu
                 } else if model.hasUnselectedWork {
                     // The primary button does what you picked. Doing the whole
                     // list is a real thing to want, so it gets its own control
@@ -387,6 +416,84 @@ struct InspectorView: View {
             }
         }
         .frame(height: Tokens.Layout.actionStackHeight, alignment: .top)
+    }
+
+    private var failedCount: Int {
+        model.conversions.reduce(into: 0) { count, candidate in
+            if case .failed = candidate.status { count += 1 }
+        }
+    }
+
+    /// Queue control is a menu because Pause, stop-after, and stop-now are three
+    /// materially different promises. One button labelled Stop made the most
+    /// destructive one look like the only one.
+    private var queueControlMenu: some View {
+        Menu {
+            switch model.queuePhase {
+            case .running:
+                Button("Pause After Current") { model.pauseAfterCurrent() }
+                Button("Stop After Current") { model.stopAfterCurrent() }
+                Divider()
+                Button("Stop Now", role: .destructive) { model.stopNow() }
+
+            case .pauseAfterCurrent:
+                Button("Resume Queue") { model.resumeQueue() }
+                Button("Stop After Current") { model.stopAfterCurrent() }
+                Divider()
+                Button("Stop Now", role: .destructive) { model.stopNow() }
+
+            case .stopAfterCurrent:
+                Button("Resume Queue") { model.resumeQueue() }
+                Divider()
+                Button("Stop Now", role: .destructive) { model.stopNow() }
+
+            case .paused:
+                Button("Resume Queue") { model.resumeQueue() }
+                Divider()
+                Button("Stop Now", role: .destructive) { model.stopNow() }
+
+            case .stopping:
+                Text("Finishing the current depth pass, then cleaning up")
+
+            case .idle:
+                EmptyView()
+            }
+        } label: {
+            HStack(spacing: Tokens.Space.xs) {
+                Image(systemName: queueControlIcon)
+                Text(queueControlTitle)
+            }
+            .font(Tokens.Font.body)
+            .foregroundStyle(Tokens.Palette.textSecondary)
+            .frame(minHeight: Tokens.Layout.minTarget)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(model.queuePhase == .stopping)
+        .help("Pause, resume, or stop the conversion queue.")
+        .accessibilityLabel("Queue controls")
+        .accessibilityValue(queueControlTitle)
+    }
+
+    private var queueControlTitle: String {
+        switch model.queuePhase {
+        case .running: "Queue controls"
+        case .pauseAfterCurrent: "Pauses after current"
+        case .stopAfterCurrent: "Stops after current"
+        case .paused: "Queue paused"
+        case .stopping: "Stopping after the current depth pass"
+        case .idle: "Queue controls"
+        }
+    }
+
+    private var queueControlIcon: String {
+        switch model.queuePhase {
+        case .running: "ellipsis.circle"
+        case .pauseAfterCurrent, .paused: "pause.circle"
+        case .stopAfterCurrent: "stop.circle"
+        case .stopping: "hourglass.circle"
+        case .idle: "ellipsis.circle"
+        }
     }
 
     /// Where the file will land, said before it lands rather than hidden in
@@ -434,7 +541,8 @@ struct InspectorView: View {
         if model.isConverting {
             return .loading(fraction: model.queueProgress)
         }
-        if case .failed = conversion.status { return .normal }
+        if model.queuePhase != .idle { return .disabled }
+        if case .failed = conversion.status { return .disabled }
         if model.modelBanner != nil { return .disabled }
         if conversion.status.isReady || conversion.settingsChangedSinceExport { return .normal }
         return .disabled

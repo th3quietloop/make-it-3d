@@ -112,6 +112,22 @@ struct MakeIt3DCommands: Commands {
         model.selectedIDs.count > 1 ? "Remove \(model.selectedIDs.count) Videos" : "Remove Video"
     }
 
+    private var canResumeQueue: Bool {
+        model.queuePhase == .paused
+            || model.queuePhase == .pauseAfterCurrent
+            || model.queuePhase == .stopAfterCurrent
+    }
+
+    private var canStopAfterCurrent: Bool {
+        model.queuePhase == .running || model.queuePhase == .pauseAfterCurrent
+    }
+
+    private var failedCount: Int {
+        model.conversions.reduce(into: 0) { count, conversion in
+            if case .failed = conversion.status { count += 1 }
+        }
+    }
+
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("Add to Queue...") { addFiles() }
@@ -134,19 +150,6 @@ struct MakeIt3DCommands: Commands {
 
         CommandGroup(after: .newItem) {
             Divider()
-            Button("Convert Selected") { model.convertSelected() }
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(model.selection == nil || model.isConverting)
-
-            Button("Convert All Ready") { model.convertAllReady() }
-                .keyboardShortcut(.return, modifiers: [.command, .shift])
-                .disabled(model.isConverting)
-
-            Button("Stop Converting") { model.cancelConversion() }
-                .keyboardShortcut(".", modifiers: .command)
-                .disabled(!model.isConverting)
-
-            Divider()
             Button("Send to Vision Pro") {
                 if case .done(let url)? = model.selection?.status { model.share(url) }
             }
@@ -163,6 +166,54 @@ struct MakeIt3DCommands: Commands {
             Button("Remove from Queue") { model.removeSelected() }
                 .keyboardShortcut(.delete, modifiers: .command)
                 .disabled(model.selection == nil)
+        }
+
+        CommandMenu("Queue") {
+            Button("Convert Selected") { model.convertSelected() }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(model.selectedReady.isEmpty || model.queuePhase != .idle)
+
+            Button("Convert All Ready") { model.convertAllReady() }
+                .keyboardShortcut(.return, modifiers: [.command, .shift])
+                .disabled(model.readyToConvert.isEmpty || model.queuePhase != .idle)
+
+            Divider()
+
+            Button("Prioritize Selected") { model.prioritizeSelection() }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                .disabled(!model.canPrioritize(model.selectedPriorityCandidates))
+
+            Button("Skip Focused Video") {
+                if let selection = model.selection { model.skip(selection) }
+            }
+            .disabled(model.selection.map { !model.canSkip($0) } ?? true)
+
+            Divider()
+
+            Button("Pause After Current") { model.pauseAfterCurrent() }
+                .disabled(model.queuePhase != .running)
+
+            Button("Resume Queue") { model.resumeQueue() }
+                .disabled(!canResumeQueue)
+
+            Button("Stop After Current") { model.stopAfterCurrent() }
+                .disabled(!canStopAfterCurrent)
+
+            Button("Stop Now") { model.stopNow() }
+                .keyboardShortcut(".", modifiers: .command)
+                .disabled(model.queuePhase == .idle || model.queuePhase == .stopping)
+
+            Divider()
+
+            Button("Retry Focused Video") {
+                if let selection = model.selection { model.retry(selection) }
+            }
+            .disabled(model.selection.map { !model.canRetry($0) } ?? true)
+
+            Button(failedCount > 1 ? "Retry All \(failedCount) Failed" : "Retry All Failed") {
+                model.retryAllFailed()
+            }
+            .disabled(failedCount == 0 || model.queuePhase == .stopping)
         }
 
         CommandMenu("Preview") {
