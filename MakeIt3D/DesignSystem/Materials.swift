@@ -38,7 +38,7 @@ final class AppearanceSettings {
         // The token is deliberately not retained for removal: this object
         // lives as long as the app does, so there is no moment where removing
         // it would matter.
-        NotificationCenter.default.addObserver(
+        workspace.notificationCenter.addObserver(
             forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
             object: nil,
             queue: .main

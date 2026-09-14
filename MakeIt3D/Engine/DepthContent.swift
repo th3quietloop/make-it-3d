@@ -14,7 +14,7 @@ import Foundation
 /// The information normalization destroys is the raw spread, and that is
 /// exactly the information needed to answer "does this shot have real depth in
 /// it, or is the model amplifying noise on a flat wall".
-struct DepthContent: Equatable, Sendable {
+struct DepthContent: Equatable, Sendable, Codable {
 
     /// The low and high percentile of the raw model output, before rescaling.
     let low: Float

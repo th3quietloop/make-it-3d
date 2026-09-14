@@ -19,7 +19,7 @@ enum Tokens {
 
         static let textPrimary = Color(hex: 0xF4F5F7)
         static let textSecondary = Color(hex: 0xF4F5F7).opacity(0.62)
-        static let textTertiary = Color(hex: 0xF4F5F7).opacity(0.40)
+        static let textTertiary = Color(hex: 0xF4F5F7).opacity(0.58)
 
         /// Cyan, right eye lineage. The only color allowed on chrome:
         /// Convert fill, progress, focus rings, selection tint.
@@ -115,9 +115,9 @@ enum Tokens {
     // MARK: Layout
 
     enum Layout {
-        static let sidebarWidth: CGFloat = 264
-        static let sidebarMinWidth: CGFloat = 220
-        static let inspectorWidth: CGFloat = 296
+        static let sidebarWidth: CGFloat = 232
+        static let sidebarMinWidth: CGFloat = 208
+        static let inspectorWidth: CGFloat = 280
         static let queueRowHeight: CGFloat = 56
         static let thumbnailSize: CGFloat = 40
         /// macOS control minimum.
@@ -170,7 +170,7 @@ enum Tokens {
     /// anywhere, in any state, ever (house rule). Scale is 1.2 ratio anchored
     /// to macOS 13pt body.
     enum TypeScale {
-        static let caption: CGFloat = 11
+        static let caption: CGFloat = 12
         static let body: CGFloat = 13
         static let rowTitle: CGFloat = 16
         static let readout: CGFloat = 20

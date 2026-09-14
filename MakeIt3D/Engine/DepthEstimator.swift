@@ -67,15 +67,17 @@ final class CoreMLDepthEstimator: DepthEstimator {
     static let modelResourceName = "DepthAnythingV2SmallF16"
 
     static func bundledModelURL() -> URL? {
-        Bundle.main.url(forResource: modelResourceName, withExtension: "mlmodelc")
+        DepthModelStore.activeModelURL(for: .perFrame)
+            ?? Bundle.main.url(forResource: modelResourceName, withExtension: "mlmodelc")
             ?? Bundle.main.url(forResource: modelResourceName, withExtension: "mlpackage")
     }
 
-    init(modelURL: URL? = CoreMLDepthEstimator.bundledModelURL()) throws {
+    init(modelURL: URL? = CoreMLDepthEstimator.bundledModelURL(),
+         computePreference: EngineTuning.ComputePreference = .automatic) throws {
         guard let modelURL else { throw DepthEstimatorError.modelMissing }
 
         let configuration = MLModelConfiguration()
-        configuration.computeUnits = .all
+        configuration.computeUnits = computePreference.units
 
         let resolvedURL: URL
         if modelURL.pathExtension == "mlpackage" {
@@ -124,7 +126,7 @@ final class CoreMLDepthEstimator: DepthEstimator {
         } else if let tensorInput, let constraint = tensorInput.value.multiArrayConstraint {
             // Expected [1, 3, H, W].
             let shape = constraint.shape.map(\.intValue)
-            guard shape.count == 4, shape[1] == 3 else {
+            guard shape.count == 4, shape[0] == 1, shape[1] == 3 else {
                 throw DepthEstimatorError.unexpectedModelInterface(
                     "Expected an input shaped [1, 3, height, width], found \(shape)."
                 )
@@ -139,6 +141,9 @@ final class CoreMLDepthEstimator: DepthEstimator {
             )
         }
 
+        guard (1...4_096).contains(width), (1...4_096).contains(height) else {
+            throw DepthEstimatorError.unexpectedModelInterface("Input dimensions must be between 1 and 4096 pixels.")
+        }
         inputName = input.key
         outputName = output.key
         inputSize = (width, height)
@@ -366,36 +371,25 @@ final class CoreMLDepthEstimator: DepthEstimator {
             throw DepthEstimatorError.unexpectedModelInterface("Depth shape \(shape) is unsupported.")
         }
 
+        guard shape.dropLast(2).allSatisfy({ $0 == 1 }), width > 0, height > 0 else {
+            throw DepthEstimatorError.unexpectedModelInterface("Expected one depth plane, found \(shape).")
+        }
         var values = [Float](repeating: 0, count: width * height)
-        let count = width * height
-
-        switch array.dataType {
-        case .float32:
-            let pointer = array.dataPointer.assumingMemoryBound(to: Float.self)
-            values.withUnsafeMutableBufferPointer { out in
-                out.baseAddress?.update(from: pointer, count: count)
+        let strides = array.strides.map(\.intValue)
+        let rowStride = strides[strides.count - 2]
+        let columnStride = strides[strides.count - 1]
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = y * rowStride + x * columnStride
+                switch array.dataType {
+                case .float32: values[y * width + x] = array.dataPointer.assumingMemoryBound(to: Float.self)[offset]
+                case .double: values[y * width + x] = Float(array.dataPointer.assumingMemoryBound(to: Double.self)[offset])
+                case .float16:
+                    values[y * width + x] = Float(Float16(bitPattern: array.dataPointer.assumingMemoryBound(to: UInt16.self)[offset]))
+                default:
+                    throw DepthEstimatorError.unexpectedModelInterface("Unsupported depth array data type.")
+                }
             }
-        case .double:
-            let pointer = array.dataPointer.assumingMemoryBound(to: Double.self)
-            for i in 0..<count { values[i] = Float(pointer[i]) }
-        case .float16:
-            let pointer = array.dataPointer.assumingMemoryBound(to: UInt16.self)
-            var source = vImage_Buffer(
-                data: UnsafeMutableRawPointer(mutating: pointer),
-                height: 1, width: vImagePixelCount(count), rowBytes: count * 2
-            )
-            values.withUnsafeMutableBufferPointer { out in
-                guard let base = out.baseAddress else { return }
-                var destination = vImage_Buffer(
-                    data: base, height: 1,
-                    width: vImagePixelCount(count), rowBytes: count * 4
-                )
-                _ = vImageConvert_Planar16FtoPlanarF(&source, &destination, 0)
-            }
-        default:
-            throw DepthEstimatorError.unexpectedModelInterface(
-                "Depth data type \(array.dataType.rawValue) is unsupported."
-            )
         }
 
         return NearnessMap(values: values, width: width, height: height)

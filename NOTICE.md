@@ -24,9 +24,19 @@ The temporally stable model, offered as the Steady option. Shipped as
 - Licence: Apache License 2.0
 - Paper: Chen et al., Video Depth Anything, 2025
 
-The conversion scripts that produced both packages are in `Tools/modelconv/`. Nobody had
-published a Core ML conversion of Video Depth Anything when this was written, so that script
-is original work and is covered by this repository's MIT licence.
+The conversion scripts that produced both packages are in `Tools/modelconv/` and are
+covered by this repository's MIT licence.
+
+## Big Buck Bunny sample excerpt
+
+`MakeIt3D/Resources/Samples/ForestMorning.mp4` is a six-second excerpt from *Big Buck Bunny*
+(2008), the Blender Foundation Peach open movie. It is licensed separately from the app
+under [Creative Commons Attribution 3.0 Unported](https://creativecommons.org/licenses/by/3.0/).
+
+(c) copyright 2008, Blender Foundation / www.bigbuckbunny.org
+
+See [sample attribution](MakeIt3D/Resources/Samples/SAMPLE_ATTRIBUTION.md) for the source,
+license links, and modifications to the excerpt.
 
 ## Apache License 2.0
 

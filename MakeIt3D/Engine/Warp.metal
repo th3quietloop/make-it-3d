@@ -14,6 +14,8 @@ struct WarpUniforms {
 struct PlateUniforms {
     float  backgroundLevel; // disparity at or below this counts as background
     float  blend;           // how fast fresh background replaces the plate
+    float2 translation;     // camera translation since the previous frame, in UV
+    float  motionConfidence;
 };
 
 struct UpsampleUniforms {
@@ -195,7 +197,7 @@ fragment float4 warpFragment(
 kernel void updateBackgroundPlate(
     texture2d<float, access::read>  source    [[texture(0)]],
     texture2d<float, access::read>  disparity [[texture(1)]],
-    texture2d<float, access::read>  oldPlate  [[texture(2)]],
+    texture2d<float, access::sample> oldPlate  [[texture(2)]],
     texture2d<float, access::write> newPlate  [[texture(3)]],
     constant PlateUniforms &u                 [[buffer(0)]],
     uint2 gid                                 [[thread_position_in_grid]])
@@ -203,7 +205,12 @@ kernel void updateBackgroundPlate(
     if (gid.x >= newPlate.get_width() || gid.y >= newPlate.get_height()) { return; }
 
     const float4 current = source.read(gid);
-    const float4 stored = oldPlate.read(gid);
+    constexpr sampler plateSampler(coord::normalized, filter::linear, address::clamp_to_edge);
+    const float2 oldUV = (float2(gid) + 0.5) / float2(newPlate.get_width(), newPlate.get_height())
+        - u.translation;
+    const bool historyInside = all(oldUV >= 0.0) && all(oldUV <= 1.0);
+    const bool trustHistory = historyInside && u.motionConfidence >= 0.2;
+    const float4 stored = trustHistory ? oldPlate.sample(plateSampler, oldUV) : current;
     const float d = disparity.read(gid).r;
 
     // Negative disparity is behind the screen plane, which is where background
@@ -270,4 +277,21 @@ kernel void anaglyph(
     const float4 l = left.read(gid);
     const float4 r = right.read(gid);
     output.write(float4(l.r, r.g, r.b, 1.0), gid);
+}
+
+
+kernel void reconstructionMask(
+    texture2d<float, access::read> source [[texture(0)]],
+    texture2d<float, access::read> disparity [[texture(1)]],
+    texture2d<float, access::write> output [[texture(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= output.get_width() || gid.y >= output.get_height()) { return; }
+    const uint left = gid.x > 0 ? gid.x - 1 : 0;
+    const uint right = min(gid.x + 1, output.get_width() - 1);
+    const float slope = abs(disparity.read(uint2(right, gid.y)).r
+                          - disparity.read(uint2(left, gid.y)).r) * 0.5;
+    const float risk = smoothstep(0.25, 0.85, slope);
+    const float3 color = mix(source.read(gid).rgb * 0.55, float3(1.0, 0.64, 0.13), risk);
+    output.write(float4(color, 1.0), gid);
 }

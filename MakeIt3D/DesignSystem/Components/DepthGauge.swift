@@ -61,15 +61,15 @@ struct DepthReading: Equatable {
         var explanation: String {
             switch self {
             case .noDepthInShot:
-                return "There is barely any real depth in this shot, so turning the strength up will make it wobble rather than pop."
+                return "The model estimates a small depth range. Increasing the amount can amplify uncertain edges."
             case .gentle:
-                return "Subtle, easy to watch for a whole film."
+                return "Small estimated separation. Review the moving proof on your headset."
             case .comfortable:
-                return "Clear separation, comfortable to sit with."
+                return "Estimated separation is within the automatic target. Headset viewing is a separate check."
             case .strong:
-                return "Plenty of pop. Fine for a short clip, tiring for a long one."
+                return "Large estimated separation. Check foreground edges and motion."
             case .tooMuch:
-                return "Likely to strain your eyes. Try Standard or Soft."
+                return "Estimated separation exceeds the target. Try Standard or Soft."
             }
         }
     }

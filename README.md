@@ -1,382 +1,170 @@
 # Make It 3D
 
-Turn your videos into 3D you can watch on a Vision Pro.
+A macOS app for turning 2D video into Apple spatial video (MV-HEVC). Depth estimation, preview and conversion run on your Mac. The output is a `.mov` with stereo video and preserved source audio tracks.
 
-A macOS app that converts 2D video into Apple spatial video (MV-HEVC).
+The workspace is built around reviewing a short excerpt before exporting a full video. Desktop previews help inspect depth ordering, edges and motion; stereoscopic depth and viewing comfort still need review on Vision Pro.
 
-Named for what it does. You point it at a flat video and it makes it 3D.
-
-Drop a flat video in, judge its depth in four preview modes, tune it, and export a `.mov`
-that visionOS Photos, Files, and AVPlayer treat as native spatial video, with the original
-audio passed through untouched.
-
-The wedge is the judgment loop, not the conversion. Every converter converts. Make It 3D lets
-you see the depth before you commit: a depth map view, a half colour anaglyph, and a wiggle
-preview that makes bad depth obvious in two seconds without glasses. Convert is the last
-step, not the first.
+This README describes the current source, including the **unreleased workspace and review update**. The latest signed download is still [v1.2.3](https://github.com/th3quietloop/make-it-3d/releases/tag/v1.2.3), which predates these changes. Build from source to try the updated workflow. See [release notes](RELEASE_NOTES.md) for the changes and remaining limits.
 
 ## Requirements
 
-- macOS 15 or later, Apple silicon
-- Xcode 26 with the Metal Toolchain component installed
-  (`xcodebuild -downloadComponent MetalToolchain`; the app has Metal shaders and will not
-  build without it)
+- macOS 15 or later on Apple silicon.
+- Xcode 26 and its Metal Toolchain component.
+- XcodeGen to generate the project.
+- The bundled model resources under `MakeIt3D/Resources/Models`, included in a normal checkout.
 
-## Build loop
+## Build and run
+
+From the repository root:
 
 ```bash
+xcodebuild -downloadComponent MetalToolchain
 xcodegen generate
-```
-
-```bash
-xcodebuild -project MakeIt3D.xcodeproj -scheme MakeIt3D -configuration Debug -derivedDataPath ./build build
-```
-
-```bash
+xcodebuild -project MakeIt3D.xcodeproj -scheme MakeIt3D -configuration Debug \
+  -derivedDataPath ./build CODE_SIGNING_ALLOWED=NO build
 open ./build/Build/Products/Debug/MakeIt3D.app
 ```
 
-Run the queue and scheduler tests without requiring a local signing identity:
+The app bundle and executable are both named **MakeIt3D**, without spaces. The application display name is **Make It 3D**. Use `open` to launch the interactive app. Run the executable directly for headless checks.
 
-```bash
-xcodebuild -project MakeIt3D.xcodeproj -scheme MakeIt3D -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' -derivedDataPath ./build \
-  CODE_SIGNING_ALLOWED=NO test
-```
-
-Launch it with `open`, not by running the binary directly. Running
-`MakeIt3D.app/Contents/MacOS/MakeIt3D` from a shell starts the process and installs
-its menu bar, but the window never appears, because the app is not registered
-with the window server that way. The headless modes below are the exception:
-they never open a window, so running the binary directly is exactly right for
-them.
-
-Any video paths passed after the app are added to the queue at launch, which
-saves a trip through the open panel when you are testing one file repeatedly:
+To add a video at launch:
 
 ```bash
 open ./build/Build/Products/Debug/MakeIt3D.app --args ~/Movies/clip.mov
 ```
 
-## The app icon
+The generated project includes the maintainer's signing settings. Use your own identity for signed development or distribution builds. The unsigned commands above do not require that identity and do not create a notarized release.
 
-The icon is generated, not drawn by hand. It is the stereo fuse at icon scale:
-two rounded frames, one vermilion and one cyan, offset horizontally and screen
-blended so the overlap resolves to near white, on the stage colour.
+## Review and export a video
 
-```bash
-./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/Make It 3D --makeicon MakeIt3D/Resources/Assets.xcassets
-```
+1. **Open a video or the sample.** Drop a video onto the window, use Add to Queue, or choose the app in Finder's Open With menu. The sample is a credited excerpt from *Big Buck Bunny*; see [sample attribution](MakeIt3D/Resources/Samples/SAMPLE_ATTRIBUTION.md).
+2. **Let automatic depth prepare.** The app analyses detected shots and keeps their automatic settings separate from your adjustments. Preparation is scheduled one video at a time.
+3. **Watch Original, then inspect.** Original plays the source video. Compare eyes switches between still eye views; Show Other Eye provides a deliberate step. Depth map and Red-cyan glasses are secondary modes. Compare Your settings, Automatic and Original at the same time and crop. Actual size (100%) requests source-resolution imagery for detail inspection.
+4. **Adjust depth.** Strength and balance stay visible in the inspector. Choose This shot or Whole video before editing. Whole video applies the changed parameter across shots. Reset restores automatic values within the chosen scope. Save named variants to revisit alternatives.
+5. **Make a short proof.** Choose a 3-, 5- or 8-second excerpt, using Automatic or your settings. Play and loop the converted proof, compare it with the original at matching source time, and inspect it on the headset. Desktop proof playback shows one eye. Later adjustments mark the proof as out of date.
+6. **Review export details.** Convert opens a preflight sheet with destination, filename, dimensions, audio tracks, approximate size, source availability and free-space checks. Existing files are preserved; a taken name gets a numbered alternative.
+7. **Check the result.** A completed export reports file checks separately from headset viewing. Failed verification remains a recoverable failure with its report. History keeps proof, success and failure records, with review, Finder and sharing actions.
 
-That writes every size the asset catalog needs, drawn natively at each size
-rather than downscaled from 1024 so the stroke stays crisp at 16pt, and packs an
-`.icns` alongside it with `iconutil`.
+Review shots opens a contact sheet with motion and edge risk indicators. These are inspection hints, not quality or comfort certification. Bookmarks, time entry and 2-, 10- or 30-second timeline windows help return to a frame. The queue can be resized or hidden, and Focus viewing hides side panels to enlarge the stage.
 
-## Verifying an export
+Under More controls, Edge cleanup crops the image slightly; Edge detail cleanup softens abrupt depth boundaries; Moving subject stability reduces reliance on older depth around motion. Rebuild hidden areas uses available earlier-frame information and a nearby-pixel fallback. Inspect these tradeoffs in a moving proof. Headset playback controls write viewing metadata and do not change the preview image.
 
-Make It 3D ships its own gate. Run the app headless and it converts a synthetic clip it
-generates itself, checks the stereo sign convention, and prints a verification report:
+## Queues, sessions and history
 
-```bash
-./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/Make It 3D --selftest
-```
+- Search names or paths and filter Waiting, Failed or Converted. Range selection and Select All follow the visible rows.
+- Drag an ordered selection or use the queue commands to move it. Convert Next keeps the active conversion running.
+- Export Selected uses a fixed selection snapshot. Export All Ready can admit videos added during its run.
+- Pause after the current video, resume, stop after it, stop now, skip or retry. A canceled re-export preserves its earlier completed output.
+- Copy depth, cleanup or model settings to a selected batch independently. Active conversions are excluded.
+- Depth edits and queue edits support Undo and Redo. Sliders group a continuous drag as one edit.
+- Queue, settings, shot analysis, bookmarks, variants and export history are saved automatically under `~/Library/Application Support/MakeIt3D`.
+- Save Session As writes a JSON session; Open Session restores it. Sessions reference source and output paths instead of embedding media. Locate source reconnects an unavailable original. An existing completed export remains available if its original is missing.
+- Interrupted exports restart from the beginning after recovery. They do not resume at a partial encoded frame.
+- History opens durable export records. Its Messages action opens the current launch's message history. Failure messages remain until dismissed, without covering the video.
 
-Pass file paths after the flag to push real clips through the same path:
+Quitting during a full conversion asks before cancellation, then waits for cleanup and saves the recovered workspace. Notifications and Dock progress provide background status; notifications require macOS permission.
 
-```bash
-./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/Make It 3D --selftest ~/Movies/clip.mov
-```
+## Useful shortcuts
 
-The report checks four things, and they are the things that actually decide whether a file
-reads as spatial:
+The menu bar is the complete shortcut reference. Common actions:
 
-1. **Spatial signalling.** The output's format description carries both the left and right
-   stereo eye view flags. This is the same metadata QuickTime Player and visionOS Photos
-   read to decide a file is spatial.
-2. **Video layers.** Two MV-HEVC layers, plus the field of view, baseline, horizontal
-   disparity adjustment, and projection kind.
-3. **Frame parity.** The export has the same frame count as the source, within one frame.
-4. **Audio passthrough.** The source audio survived the trip.
+| Action | Shortcut |
+| --- | --- |
+| Add videos | ⌘O |
+| Open session / Save Session As | ⇧⌘O / ⌘S |
+| Undo / Redo | ⌘Z / ⇧⌘Z |
+| Export selected / All ready | ⌘Return / ⇧⌘Return |
+| Export history | ⇧⌘H |
+| Original / Depth map / Red-cyan glasses / Compare eyes | 1 / 2 / 3 / 4 |
+| Play or pause Original/proof; toggle eye alternation in Compare eyes | Space |
+| Show other eye | ⌘E |
+| Make a five-second proof | ⇧⌘P |
+| Bookmark frame | ⌘B |
+| Previous / next frame | ⌘← / ⌘→ |
+| Back / forward one second | ⇧⌘← / ⇧⌘→ |
+| Stop queue now | ⌘. |
+| Show exported file / Share to headset | ⌘R / ⇧⌘S |
 
-There is also a writer only probe, which feeds synthetic stereo pairs straight to the
-MV-HEVC writer with no model and no warp in the loop. It is the fastest way to tell whether
-a stalled export is the writer or something upstream of it:
+## Depth models and performance
 
-```bash
-./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/Make It 3D --selftest --writerprobe
-```
+**Normal** uses Depth Anything V2 Small, with temporal smoothing and motion-aware rejection. **Steady (slow)** uses Video Depth Anything Small when available. Steady is experimental and can be much slower; its still preview uses Normal depth, so use a converted proof to judge the temporal model.
 
-### Measured throughput
+Settings contains model tools:
 
-On an M-series Mac, Release build:
+- **Measure on This Mac** compares compute preferences using a warm-up and three source frames. These measurements cover per-frame depth inference, not full export throughput. Decode, reconstruction, encoding, resolution and footage also affect completion time. Export history gradually provides estimates from actual runs on this Mac.
+- **Import Core ML Model** accepts a compatible `.mlpackage` or `.mlmodelc`. The app copies it, checks input/output compatibility, runs calibration inference and stores a checksum before activation. **Use Built-in** returns to the bundled model. Imported models must match the supported estimator contract; arbitrary Core ML models are not interchangeable.
+- **Download…** accepts an HTTPS ZIP URL and its publisher's SHA-256 checksum, both supplied by you. It verifies the archive hash, checks archive paths and size limits, then runs the same model validation before activation. Downloads are explicit; there is no curated catalog of automatically trusted model sources. The previous model remains active if validation fails.
 
-| Source | Throughput |
-| ------ | ---------- |
-| 1280x720 | 32.9 fps |
-| 1920x1080 | 30.0 fps |
+Model conversion scripts live in `Tools/modelconv`. See [NOTICE.md](NOTICE.md) for the bundled models' Apache 2.0 notices and [LICENSE](LICENSE) for the app's MIT license. A compatible model passing calibration is not proof of visual quality; review representative footage after changing it.
 
-The PRD guardrail is 15 fps at 1080p, so there is roughly double the headroom.
-Resolution costs less than it looks like it should, because the depth model runs
-at its own fixed 518x392 no matter what the source is. Only the warp and the
-encode scale with pixel count.
+## Verification gates
 
-Debug builds run about a third of this. Measure in Release.
-
-### The final human check
-
-None of the above proves the depth is comfortable to look at, and no automated check can.
-**AirDrop an export to the Vision Pro and open it in Photos.** That is the real verification,
-and it is the one step a person has to do.
-
-## The golden set
-
-Five clips live in `~/Movies/MakeIt3DGoldenSet`, plus the synthetic clip the app generates:
-
-1. Dialogue: two people, static camera, shallow scene
-2. Landscape: wide shot, sky, distant layers
-3. Action: fast subject and camera movement, motion blur
-4. Animation: CG feature footage
-5. Hard detail: low light, hair, rain, or foliage edges
-
-Each is scored 1 to 5 on depth ordering, edge integrity, temporal stability, and comfort.
-Any change to the depth model, the smoothing, or the disparity mapping re-runs the set. The
-debug menu has a "Convert golden set" item that queues everything found in that folder and
-writes a dated verification report next to each export.
-
-## The language rule
-
-The engine thinks in convergence, disparity, overscan, and baseline. The
-interface does not use any of those words.
-
-A person converting a home video thinks in "how much depth" and "does this look
-right", so every control is named for what it does to the picture: Depth
-strength, Depth balance, Edge cleanup, Fine-tune strength. The terms of art are
-still there, in the tooltips, for anyone who wants them.
-
-The same rule killed the old readouts. "In front 2.7 px, behind 4.4 px" answered
-a question nobody asked and left the only real one unanswered, so it became a
-gauge that says "Good depth" or "Too strong" with a line about what that means
-for watching it. The pixel values live in that gauge's tooltip.
-
-Field of view and baseline are grouped separately, under Headset playback, and
-say plainly that they change the file's metadata rather than the conversion. A
-control sitting next to a picture that does not change the picture teaches people
-that the controls here are decorative.
-
-## Telling the user what is happening
-
-A feature length conversion runs for an hour, and the whole premise is that you
-walk away. So:
-
-- Toasts report every event: a file added, a duplicate skipped, a file Make It 3D
-  cannot read, a conversion finished, a conversion failed. Successes retire
-  themselves after a few seconds; failures stay until dismissed, because a
-  message you missed is a message that failed.
-- System notifications fire on finish and failure, but only when Make It 3D is not
-  the frontmost app. Permission is asked for at the first conversion, not at
-  launch.
-- The Dock icon carries a progress bar, so the Dock answers "is it still going"
-  without switching apps.
-- Queue rows show time remaining, not just a percentage. "About 25 min left" is
-  information; "40%" on a two hour film is anxiety.
-- Quitting mid conversion asks first. It is the one genuinely destructive,
-  genuinely irreversible action in the app.
-
-## Working with long queues
-
-Queues with dozens of videos stay manageable without waiting for the current
-conversion to finish:
-
-- Right click a waiting video and choose **Move to Top of Queue**. During a run,
-  the action becomes **Convert Next** and never interrupts the active video.
-- Select several videos to prioritise or drag them as an ordered group.
-- Search by name or path, then filter the list to Waiting, Failed, or Converted.
-- The active video and the next video stay pinned above the scrolling list.
-- **Next**, **#2**, **#3**, and the remaining-time/output estimates show what the
-  queue will do before you leave it running.
-- Pause after the current video, stop after it, stop immediately, skip a video,
-  or retry failures from the sidebar or the Queue menu.
-
-**Convert Selected** is a fixed snapshot of the selected rows. **Convert All**
-also picks up videos added while that run is underway.
-
-## How it works
-
-```
-Ingest -> DepthEstimator -> Stabilizer -> Disparity -> WarpRenderer -> SpatialWriter
-```
-
-- **Ingest** reads the source through a video composition, so a rotated phone clip arrives
-  upright, and hands frames to the pipeline one at a time. Pulling one frame at a time is
-  the backpressure: the reader only decodes as fast as the model consumes, so memory stays
-  flat on a feature length file.
-- **DepthEstimator** runs Depth Anything V2 Small on the Neural Engine. The model declares
-  its own input geometry (518x392 for this package) and Make It 3D reads that at runtime rather
-  than hardcoding it. Output is inverse depth, treated as nearness: higher means closer.
-- **Stabilizer** normalizes each frame against its own 2nd and 98th percentiles, smooths
-  across frames with an exponential moving average, and resets on scene cuts rather than
-  smearing depth across them.
-- **Disparity** maps nearness to pixels: `d = S * W * (nearness - C)`. Forward pop is halved
-  afterwards, because content in front of the screen plane is the expensive direction for
-  the eyes.
-- **WarpRenderer** upsamples the depth map to frame resolution with a joint bilateral filter
-  guided by frame luma, then displaces a Metal vertex grid horizontally. Triangles that
-  straddle a depth discontinuity stretch across the gap, which is what covers disocclusions
-  without an inpainting pass. Both views are overscanned 2.5% and cropped to hide the
-  stretched edges.
-- **SpatialWriter** writes MV-HEVC through `AVAssetWriter`: two tagged layers in one HEVC
-  track, with the spatial metadata visionOS reads.
-
-Every number the pipeline uses lives in `EngineTuning`. Nothing downstream hardcodes a
-constant, so the golden set can tune the engine from one place.
-
-## Notes from the build
-
-Three things here are deliberate and would otherwise look like mistakes.
-
-**The disparity sign is flipped once, in `EngineTuning`.** For an object nearer than the
-screen plane, the ray from the left eye through it meets the screen to the right of centre
-and the ray from the right eye meets it to the left. That is crossed disparity, and it means
-the left eye's copy sits further right. The raw mapping produced the opposite, so the sign is
-inverted in exactly one place. `SignConventionCheck` measures this from rendered pixels and
-fails the gate if it ever changes.
-
-**The writer goes through the double underscore CoreMedia symbols.** `CMTaggedBufferGroup`
-and its create function are marked `CF_REFINED_FOR_SWIFT`, which hides the plain names from
-Swift, and the refined replacement that can reach an asset writer input
-(`AVAssetWriter.inputTaggedPixelBufferGroupReceiver`) is macOS 26 and later. Make It 3D targets
-macOS 15, so the unrefined C entry points are the supported way there. Building the group as
-a `CMSampleBuffer` instead does not work: the writer input rejects it, because a tagged
-buffer group sample buffer does not carry the `vide` media type the input requires.
-
-**Eye buffers come from a pool, never from a reused pair.** The writer retains what it is
-handed and the encoder reads it asynchronously, so a frame is not free to be overwritten just
-because `append` returned. Reusing one pair corrupts frames in flight and wedges the writer.
-
-## Where the eye views come from
-
-The left eye is the source frame, untouched, and the right eye carries the whole
-disparity. Warping both eyes by half sounds fairer and is not: the visual system
-favours the sharper eye, so one perfect view next to one rebuilt view reads
-cleaner than two half rebuilt ones. It is also cheaper, because the left eye is
-a blit rather than a render. Symmetric is still available under More controls.
-
-Shifting a frame sideways uncovers areas that eye never saw. The mesh used to
-stretch a neighbouring pixel across those gaps, which is why the export cropped
-in 2.5% to hide the smear. Make It 3D now keeps a **background plate**: as
-foreground moves across a shot, whatever is behind it gets remembered, and the
-gaps are filled from that instead. The warp measures its own horizontal stretch
-per triangle and discards anything past the limit, so the plate shows through
-exactly where the smear used to be and nowhere else. The plate resets on a scene
-cut, because a memory of the previous shot is worse than no memory at all.
-
-Discarding pixels is only safe if something is underneath them, so
-`DisocclusionCheck` renders the hardest case (a hard depth edge at Deep
-strength) and counts how many output pixels came out as nothing. It runs as part
-of `--selftest`.
-
-## Depth models
-
-Make It 3D ships **Depth Anything V2 Small** (Apache-2.0), which reads one frame at
-a time. Per frame models have no memory, so their output wobbles slightly even
-when the picture barely moves, and Make It 3D smooths that with an exponential
-moving average. That trades flicker for lag and fixes neither properly.
-
-**Video Depth Anything Small** (also Apache-2.0) is the actual fix: it reads a
-window of frames and is steady across a shot by construction. The upstream
-project ships no Core ML build, and the request for one had been open since
-January 2025, so `Tools/modelconv/convert_vda.py` is the build step. The engine
-side is done either way: `WindowedDepthEstimator` sits alongside the per frame
-protocol, and `ConversionController` picks a loop based on which model is asked
-for, falling back to per frame whenever the video model is not in the bundle.
+### Regression tests and CI
 
 ```bash
-cd Tools/modelconv && uv venv --python 3.11 .venv
-uv pip install --python .venv/bin/python torch==2.7.0 torchvision==0.22.0 coremltools einops opencv-python-headless easydict huggingface_hub
-.venv/bin/python convert_vda.py --frames 32
+xcodegen generate
+xcodebuild -project MakeIt3D.xcodeproj -scheme MakeIt3D -configuration Debug \
+  -destination 'platform=macOS,arch=arm64' -derivedDataPath ./build \
+  CODE_SIGNING_ALLOWED=NO test
 ```
 
-Three things had to be dealt with to get it through the converter, all recorded
-in that script. The model reads frame counts and patch grids off its tensors,
-which under a trace become one element arrays rather than integers, and
-coremltools stops at the int() cast. The window size is fixed at conversion
-time, so those values are pinned as literals instead. The temporal head's
-intermediate resolutions are recorded on a warmup pass and then used as
-constants. And the converter's scalar cast is widened to accept a one element
-array, because a one element array holding 37 and the integer 37 mean the same
-thing to every op downstream.
+The XCTest target covers scheduler ordering, cancellation, retry, settings scope, persistence, proof state, navigation and engine regressions. The [CI workflow](.github/workflows/ci.yml) builds and runs it on the configured macOS runner, then retains its result bundle. Hosted CI excludes the generated-media test that needs the physical Mac's spatial-video encoder; the command above and native self-test run that gate locally. A normal `build` does not run tests, and hosted CI does not prove physical hardware encoding or headset playback.
 
-The window is 32 frames with 10 frames of look ahead, matching upstream. Each
-window picks its own scale for relative depth, so the overlapping frames are
-fitted onto the previous window's values before anything is written. Without
-that the depth steps visibly at every seam.
+### Native media release checks
 
-### It converts, it is correct, and it is far too slow
+Run the headless self-test on a physical Apple silicon Mac:
 
-Measured on the same synthetic clip in the same Debug build:
+```bash
+./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/MakeIt3D --selftest
+```
 
-| Model | Throughput |
-| ----- | ---------- |
-| Depth Anything V2 Small, per frame | 12.5 fps |
-| Video Depth Anything Small, 32 frame window | 0.04 fps |
+It exercises stereo sign and disocclusion checks, synthetic end-to-end conversion, and generated media regressions for variable frame timing, long audio tails, multiple audio tracks, range exports, custom metadata, destination protection and cancellation cleanup. It prints the working directory and exits with failure if a required check fails.
 
-Roughly 300 times slower. The output is right (all six verification checks
-pass, frame parity exact, the spatial CLI agrees) and the traced graph matches
-the eager model to a max delta of zero, so this is not a correctness problem. It
-is a performance one, and a decisive one: 120 frames took 47 minutes.
+To include a real clip:
 
-The cause is almost certainly that the graph does not fit the Neural Engine. The
-input is a 5D tensor and the temporal modules reshape and permute in 5D
-throughout, while the ANE wants 4D NCHW. Loading the model even to inspect its
-compute plan takes over ten minutes, which points the same way. Shrinking the
-window would help linearly and nowhere near enough: the gap is three orders of
-magnitude, not one.
+```bash
+./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/MakeIt3D --selftest ~/Movies/clip.mov
+```
 
-So the per frame model stays the default, the video model is labelled
-**Steady (slow)** and marked experimental, and Make It 3D refuses to start a run
-that would take more than a few minutes without saying how long it would be and
-offering to switch back. Making it practical means restructuring the conversion
-around 4D operations so the ANE will take it, which is a real project rather
-than a tweak.
+The temporal model is an explicit, potentially lengthy extra gate:
 
-## The sandbox decision
+```bash
+./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/MakeIt3D --selftest --include-video-model
+```
 
-Make It 3D is signed with a Developer ID certificate, notarized by Apple, and unsandboxed.
-Skipping the sandbox removes security scoped bookmarks and a whole class of file access
-friction: the app reads any video you drop on it and writes where you tell it to. That choice
-rules out the Mac App Store, which requires the sandbox. It does not affect the Developer ID
-route used here, and notarization still means Apple has scanned the binary.
+That option exercises the video model only when it is available. Without the option, the temporal path is reported as skipped. For a writer-only diagnostic that excludes depth inference and warping:
 
-## Known limits
+```bash
+./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/MakeIt3D --selftest --writerprobe
+```
 
-Honest about where it is at v1.
+Export verification reads the output back through AVFoundation, checks stereo signaling and layers, compares decoded frame counts, and checks audio track count, timing, duration and language. The external `spatial` utility supplies an additional check when installed. Its absence is reported as **Not checked / SKIP**, not as a successful external check. File verification does not certify depth quality or viewing comfort.
 
-**Cut out edges on some shots.** The depth model produces a hard boundary between a subject
-and its background. Where that boundary does not land exactly on the silhouette, the warp
-tears and you see an outline. It is most visible on people against distinct backgrounds and
-least visible on landscapes, crowds, water, and anything where depth changes gradually.
-Turning the strength down to Soft reduces it directly, because tear width scales with
-disparity.
+### Human release checks
 
-**Cardboarding.** Objects sit at the right distance from each other but can look internally
-flat, like a pop up book. Same root cause: the model resolves depth between things better
-than depth inside them.
+Inspect short proofs and completed exports on Vision Pro in Photos. Use representative dialogue, landscapes, fast action, animation and difficult detail such as hair, foliage and low light. Record depth ordering, edge integrity, temporal behavior, audio and comfort. Repeat this review after depth model, smoothing or reconstruction changes.
 
-Both are the signature failure of monocular 2D to 3D conversion and every product in this
-category has them. Feathering the disparity across depth discontinuities, and capping how
-fast disparity may change per pixel, are the two fixes that would help most. Neither is
-implemented yet.
+`Scripts/release.sh` runs the native self-test and regression tests before signing validation, notarization, stapling and packaging. It requires configured signing and notarization credentials. Headset review remains a separate release gate; the script cannot perform it. Use a Release build for performance measurements.
 
-**The Steady depth model is impractical.** Video Depth Anything converts correctly and holds
-depth perfectly still, but measured at roughly 0.04 fps against 30 fps for the per frame
-model. It ships because it is correct, labelled slow, behind a warning dialog. Do not point
-it at a film.
+## Pipeline and limits
 
-**HDR is flattened.** Sources are converted to SDR Rec. 709, because the warp renders into
-8 bit BGRA.
+```text
+Ingest → DepthEstimator → Stabilizer → Disparity → WarpRenderer → SpatialWriter
+```
 
-## Non-goals
+Ingest handles video orientation and frame timestamps. Depth inference produces nearness; smoothing and shot changes manage its temporal behavior. Disparity maps that depth into an eye shift. Reconstruction uses depth edges, the source image and available background history. SpatialWriter writes tagged stereo buffers into MV-HEVC and preserves supported source audio tracks. Export captures the same automatic settings plus explicit overrides used by the inspector.
 
-Real time conversion or screen capture streaming, a visionOS companion app, DRM content,
-cloud processing, Windows, video editing, and spatial photo conversion. HDR sources are
-converted to SDR Rec. 709, because the warp renders into 8 bit BGRA.
+- Monocular depth can produce incorrect boundaries, halos and internally flat objects. Cleanup controls reduce some artifacts but do not reconstruct unseen geometry reliably.
+- Still previews do not reproduce the full temporal history of an export. Use a moving proof for motion, temporal depth and filling behavior.
+- HDR preservation is not implemented. The current render path uses 8-bit buffers; HDR source color appearance requires separate review. The experimental HDR writer probe is a capability investigation, not an HDR export feature.
+- Model inference can be slow to cancel; cleanup waits for the current operation to return.
+- Session media stays at its existing paths. Moving a session JSON alone does not move its videos.
+- The app uses an unsandboxed Developer ID distribution configuration. Notarization is a release step, not a property of every local build.
+
+Real-time conversion, DRM removal, cloud processing, a visionOS companion, Windows, full video editing and spatial photo conversion are outside the current app.
+
+## Regenerate the icon
+
+```bash
+./build/Build/Products/Debug/MakeIt3D.app/Contents/MacOS/MakeIt3D --makeicon MakeIt3D/Resources/Assets.xcassets
+```

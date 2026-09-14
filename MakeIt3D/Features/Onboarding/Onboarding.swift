@@ -85,8 +85,8 @@ final class Onboarding {
 
         toasts.guidance(
             "Look at the depth first",
-            detail: "Wiggle flips between the two eyes. If the depth reads wrong here, it will read wrong in the headset.",
-            actionLabel: "Show me"
+            detail: "Compare eyes switches between the left and right views. Check faces and edges, then try a short proof on your headset.",
+            actionLabel: "Compare eyes"
         ) {
             showDepth()
         }
@@ -102,8 +102,8 @@ final class Onboarding {
         isTouring = false
 
         toasts.guidance(
-            "Depth strength is the main dial",
-            detail: "Soft, Standard, Deep. The gauge above Convert says whether this shot is comfortable or too strong."
+            "Adjust depth while you compare",
+            detail: "Adjust depth is on the right. Choose This shot or Whole video, then change strength and balance. Start gently and check a short proof."
         )
     }
 }

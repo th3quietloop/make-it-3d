@@ -51,17 +51,19 @@ final class VideoDepthEstimator: WindowedDepthEstimator {
     static let modelResourceName = "VideoDepthAnythingSmall"
 
     static func bundledModelURL() -> URL? {
-        Bundle.main.url(forResource: modelResourceName, withExtension: "mlmodelc")
+        DepthModelStore.activeModelURL(for: .video)
+            ?? Bundle.main.url(forResource: modelResourceName, withExtension: "mlmodelc")
             ?? Bundle.main.url(forResource: modelResourceName, withExtension: "mlpackage")
     }
 
     static var isAvailable: Bool { bundledModelURL() != nil }
 
-    init(modelURL: URL? = VideoDepthEstimator.bundledModelURL()) throws {
+    init(modelURL: URL? = VideoDepthEstimator.bundledModelURL(),
+         computePreference: EngineTuning.ComputePreference = .automatic) throws {
         guard let modelURL else { throw DepthEstimatorError.modelMissing }
 
         let configuration = MLModelConfiguration()
-        configuration.computeUnits = .all
+        configuration.computeUnits = computePreference.units
 
         let resolvedURL: URL
         if modelURL.pathExtension == "mlpackage" {
@@ -101,6 +103,13 @@ final class VideoDepthEstimator: WindowedDepthEstimator {
         guard shape.count == 5, shape[0] == 1, shape[2] == 3 else {
             throw DepthEstimatorError.unexpectedModelInterface(
                 "Expected an input shaped [1, frames, 3, height, width], found \(shape)."
+            )
+        }
+
+        guard (2...64).contains(shape[1]), (1...2_048).contains(shape[3]),
+              (1...2_048).contains(shape[4]), shape[1] * 3 * shape[3] * shape[4] <= 128_000_000 else {
+            throw DepthEstimatorError.unexpectedModelInterface(
+                "Video models need 2–64 frames, at most 2048 pixels per side, and at most 128 million input values."
             )
         }
 
@@ -206,7 +215,7 @@ final class VideoDepthEstimator: WindowedDepthEstimator {
     /// Splits the model's [1, T, H, W] output into one map per frame.
     private func unpack(_ array: MLMultiArray) throws -> [NearnessMap] {
         let shape = array.shape.map(\.intValue)
-        guard shape.count == 4 else {
+        guard shape.count == 4, shape[0] == 1, shape[1] == windowLength, shape[2] > 0, shape[3] > 0 else {
             throw DepthEstimatorError.unexpectedModelInterface(
                 "Expected depth shaped [1, frames, height, width], found \(shape)."
             )
@@ -219,41 +228,26 @@ final class VideoDepthEstimator: WindowedDepthEstimator {
         var maps: [NearnessMap] = []
         maps.reserveCapacity(frames)
 
-        switch array.dataType {
-        case .float32:
-            let pointer = array.dataPointer.assumingMemoryBound(to: Float.self)
-            for index in 0..<frames {
-                var values = [Float](repeating: 0, count: count)
-                values.withUnsafeMutableBufferPointer { out in
-                    out.baseAddress?.update(
-                        from: pointer.advanced(by: index * count), count: count
-                    )
+        let strides = array.strides.map(\.intValue)
+        for index in 0..<frames {
+            var values = [Float](repeating: 0, count: count)
+            for y in 0..<height {
+                for x in 0..<width {
+                    let offset = index * strides[1] + y * strides[2] + x * strides[3]
+                    switch array.dataType {
+                    case .float32:
+                        values[y * width + x] = array.dataPointer.assumingMemoryBound(to: Float.self)[offset]
+                    case .float16:
+                        values[y * width + x] = Float(Float16(bitPattern:
+                            array.dataPointer.assumingMemoryBound(to: UInt16.self)[offset]))
+                    default:
+                        throw DepthEstimatorError.unexpectedModelInterface("Unsupported video depth array data type.")
+                    }
                 }
-                maps.append(NearnessMap(values: values, width: width, height: height))
             }
-        case .float16:
-            let pointer = array.dataPointer.assumingMemoryBound(to: UInt16.self)
-            for index in 0..<frames {
-                var values = [Float](repeating: 0, count: count)
-                var source = vImage_Buffer(
-                    data: UnsafeMutableRawPointer(mutating: pointer.advanced(by: index * count)),
-                    height: 1, width: vImagePixelCount(count), rowBytes: count * 2
-                )
-                values.withUnsafeMutableBufferPointer { out in
-                    guard let base = out.baseAddress else { return }
-                    var destination = vImage_Buffer(
-                        data: base, height: 1,
-                        width: vImagePixelCount(count), rowBytes: count * 4
-                    )
-                    _ = vImageConvert_Planar16FtoPlanarF(&source, &destination, 0)
-                }
-                maps.append(NearnessMap(values: values, width: width, height: height))
-            }
-        default:
-            throw DepthEstimatorError.unexpectedModelInterface(
-                "Depth data type \(array.dataType.rawValue) is unsupported."
-            )
+            maps.append(NearnessMap(values: values, width: width, height: height))
         }
+
         return maps
     }
 
@@ -308,20 +302,21 @@ enum WindowAlignment {
         let count = incoming.count
         guard count > 0 else { return (1, 0) }
 
-        var sumX: Float = 0, sumY: Float = 0, sumXX: Float = 0, sumXY: Float = 0
-        vDSP_sve(incoming, 1, &sumX, vDSP_Length(count))
-        vDSP_sve(reference, 1, &sumY, vDSP_Length(count))
-        vDSP_svesq(incoming, 1, &sumXX, vDSP_Length(count))
-        vDSP_dotpr(incoming, 1, reference, 1, &sumXY, vDSP_Length(count))
-
-        let n = Float(count)
-        let denominator = n * sumXX - sumX * sumX
-        // A window with no variation gives nothing to fit against, so leave it.
-        guard abs(denominator) > 1e-6 else { return (1, 0) }
-
-        let scale = (n * sumXY - sumX * sumY) / denominator
-        let shift = (sumY - scale * sumX) / n
-        return (scale, shift)
+        // Centered Double accumulation avoids catastrophic cancellation on
+        // long, nearly flat windows (n*sum(x*x) - sum(x)^2 in Float).
+        let meanX = incoming.reduce(0.0) { $0 + Double($1) } / Double(count)
+        let meanY = reference.reduce(0.0) { $0 + Double($1) } / Double(count)
+        var variance = 0.0, covariance = 0.0
+        for index in 0..<count {
+            let x = Double(incoming[index]) - meanX
+            variance += x * x
+            covariance += x * (Double(reference[index]) - meanY)
+        }
+        guard variance > Double(count) * 1e-12 else { return (1, 0) }
+        let scale = covariance / variance
+        let shift = meanY - scale * meanX
+        guard scale.isFinite, shift.isFinite, scale > 0 else { return (1, 0) }
+        return (Float(scale), Float(shift))
     }
 
     static func apply(_ map: NearnessMap, scale: Float, shift: Float) -> NearnessMap {

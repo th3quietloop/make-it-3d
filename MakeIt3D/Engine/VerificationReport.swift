@@ -13,17 +13,19 @@ struct VerificationReport: Sendable {
         let name: String
         let passed: Bool
         let detail: String
+        var skipped: Bool = false
 
         var line: String {
-            "\(passed ? "PASS" : "FAIL")  \(name): \(detail)"
+            "\(skipped ? "SKIP" : (passed ? "PASS" : "FAIL"))  \(name): \(detail)"
         }
     }
 
     let outputURL: URL
     let checks: [Check]
     let producedAt: Date
+    var verifiedFrameCount: Int? = nil
 
-    var passed: Bool { checks.allSatisfy(\.passed) }
+    var passed: Bool { checks.allSatisfy { $0.skipped || $0.passed } }
 
     var text: String {
         var lines = [
@@ -47,9 +49,13 @@ struct VerificationReport: Sendable {
     static func verify(
         outputURL: URL,
         sourceProbe: SourceProbe,
-        writtenFrameCount: Int
+        writtenFrameCount: Int,
+        sourceFrameCount: Int? = nil,
+        tuning: EngineTuning = .default,
+        timeRange: CMTimeRange? = nil
     ) async -> VerificationReport {
         var checks: [Check] = []
+        var verifiedFrames: Int?
 
         let asset = AVURLAsset(url: outputURL)
 
@@ -132,54 +138,85 @@ struct VerificationReport: Sendable {
             checks.append(Check(name: "Video layers", passed: false, detail: "not readable"))
         }
 
-        // 3. Frame parity with the source.
-        let expected = sourceProbe.estimatedFrameCount
-        let drift = abs(writtenFrameCount - expected)
-        checks.append(Check(
-            name: "Frame parity",
-            passed: drift <= 1,
-            detail: "wrote \(writtenFrameCount), source estimated \(expected), drift \(drift)"
-        ))
-
-        // 4. Audio came across.
+        // Count decoded samples, never duration × nominal FPS: phone recordings
+        // may be variable-rate and audio may outlast the picture.
         do {
-            let audioTracks = try await asset.loadTracks(withMediaType: .audio)
-            if sourceProbe.hasAudio {
-                if let audio = audioTracks.first {
-                    let duration = try await audio.load(.timeRange).duration.seconds
-                    checks.append(Check(
-                        name: "Audio passthrough",
-                        passed: duration > 0,
-                        detail: String(format: "audio track present, %.2fs", duration)
-                    ))
-                } else {
-                    checks.append(Check(
-                        name: "Audio passthrough",
-                        passed: false,
-                        detail: "the source had audio but the export does not"
-                    ))
-                }
-            } else {
-                checks.append(Check(
-                    name: "Audio passthrough",
-                    passed: true,
-                    detail: "the source had no audio, nothing to carry over"
-                ))
+            let expected: Int
+            if let sourceFrameCount { expected = sourceFrameCount } else {
+                expected = try await decodedFrameCount(url: sourceProbe.url, timeRange: timeRange)
             }
-        } catch {
+            let decodedOutput = try await decodedFrameCount(url: outputURL)
+            verifiedFrames = decodedOutput
             checks.append(Check(
-                name: "Audio passthrough",
-                passed: false,
-                detail: error.localizedDescription
+                name: "Frame parity",
+                passed: expected > 0 && decodedOutput == expected && writtenFrameCount == expected,
+                detail: "source decoded \(expected), appended \(writtenFrameCount), output decoded \(decodedOutput)"
             ))
+        } catch {
+            checks.append(Check(name: "Frame parity", passed: false, detail: error.localizedDescription))
+        }
+
+        // Preserve each overlapping audio track, including its timing and language.
+        do {
+            let source = AVURLAsset(url: sourceProbe.url)
+            let sourceTracks = sourceProbe.hasAudio ? try await source.loadTracks(withMediaType: .audio) : []
+            let outputTracks = try await asset.loadTracks(withMediaType: .audio)
+            var expected: [(duration: Double, start: Double, language: String?)] = []
+            for track in sourceTracks {
+                var range = try await track.load(.timeRange)
+                if let timeRange {
+                    range = CMTimeRangeGetIntersection(range, otherRange: timeRange)
+                }
+                guard range.isValid, !range.isEmpty else { continue }
+                let language = try await track.load(.languageCode)
+                expected.append((range.duration.seconds,
+                                 range.start.seconds - (timeRange?.start.seconds ?? 0), language))
+            }
+            var problems: [String] = []
+            if expected.count != outputTracks.count {
+                problems.append("expected \(expected.count) audio tracks, found \(outputTracks.count)")
+            }
+            for index in 0..<min(expected.count, outputTracks.count) {
+                let range = try await outputTracks[index].load(.timeRange)
+                let language = try await outputTracks[index].load(.languageCode)
+                let reference = expected[index]
+                // Allow codec packet/edit-list rounding, not missing track tails.
+                if abs(range.duration.seconds - reference.duration) > 0.1 {
+                    problems.append(String(format: "track %d duration %.3fs, expected %.3fs",
+                                           index + 1, range.duration.seconds, reference.duration))
+                }
+                if abs(range.start.seconds - reference.start) > 0.1 {
+                    problems.append("track \(index + 1) starts at the wrong time")
+                }
+                if let expectedLanguage = reference.language, expectedLanguage != "und",
+                   expectedLanguage != language {
+                    problems.append("track \(index + 1) language was not preserved")
+                }
+            }
+            checks.append(Check(
+                name: "Audio passthrough", passed: problems.isEmpty,
+                detail: problems.isEmpty
+                    ? "\(expected.count) audio tracks; duration, timing and language preserved"
+                    : problems.joined(separator: "; ")
+            ))
+        } catch {
+            checks.append(Check(name: "Audio passthrough", passed: false, detail: error.localizedDescription))
         }
 
         // 5. A second opinion from outside this codebase.
-        if let external = SpatialCLI.verify(outputURL) {
+        if let external = SpatialCLI.verify(outputURL, tuning: tuning) {
             checks.append(external)
         }
 
-        return VerificationReport(outputURL: outputURL, checks: checks, producedAt: Date())
+        return VerificationReport(outputURL: outputURL, checks: checks, producedAt: Date(), verifiedFrameCount: verifiedFrames)
+    }
+
+    private static func decodedFrameCount(url: URL, timeRange: CMTimeRange? = nil) async throws -> Int {
+        let probe = try await Ingest.probe(url: url)
+        let frames = try await Ingest.FrameSource.open(probe: probe, timeRange: timeRange)
+        defer { frames.cancel() }
+        while try frames.next() != nil { try Task.checkCancellation() }
+        return frames.decodedFrameCount
     }
 
     // MARK: Extension readers

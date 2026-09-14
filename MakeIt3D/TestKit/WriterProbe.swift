@@ -15,10 +15,10 @@ enum WriterProbe {
         print("Writer probe: \(frameCount) frames at \(width)x\(height)")
 
         let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MakeIt3DWriterProbe.mov")
+            .appendingPathComponent("MakeIt3DWriterProbe-\(UUID()).mov")
 
         let probe = SourceProbe(
-            url: outputURL,
+            url: outputURL.appendingPathExtension("synthetic-source"),
             duration: CMTime(value: CMTimeValue(frameCount), timescale: 30),
             nominalFrameRate: 30,
             width: width,
@@ -57,7 +57,8 @@ enum WriterProbe {
             print("  wrote \(writer.frameCount) frames")
 
             let report = await VerificationReport.verify(
-                outputURL: outputURL, sourceProbe: probe, writtenFrameCount: writer.frameCount
+                outputURL: outputURL, sourceProbe: probe, writtenFrameCount: writer.frameCount,
+                sourceFrameCount: frameCount
             )
             print(report.text)
             return report.passed

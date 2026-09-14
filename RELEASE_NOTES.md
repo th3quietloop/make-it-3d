@@ -1,54 +1,45 @@
-Turns your videos into 3D your Vision Pro plays natively. Runs entirely on
-your Mac. No account, no upload, nothing leaves the machine.
+# Unreleased — workspace and review update
 
-## Getting it
+Make It 3D converts 2D videos into spatial `.mov` files on your Mac. This update makes it easier to inspect a short proof, keep useful settings and recover a session before committing to a full export.
 
-Download `MakeIt3D-1.2.3.zip`, unzip, drag to Applications. Signed and notarized by Apple, so
-it opens without a warning.
+## A clearer review workflow
 
-Needs macOS 15 or later on Apple silicon.
+- A larger viewing stage, resizable queue and Focus viewing mode.
+- Original video playback, deliberate Compare eyes, Depth map and Red-cyan glasses inspection modes.
+- Source-resolution 100% inspection, matching-frame comparisons of Your settings / Automatic / Original, bookmarks, time entry, timeline zoom and a shot contact sheet.
+- Always-visible Adjust depth controls with explicit This shot and Whole video scope, independent resets, Undo and named variants.
+- Three-, five- and eight-second converted proofs, looping playback and original/proof comparison. Later edits mark a proof as out of date; History retains previous proofs.
+- Edge detail cleanup and moving-subject controls, with motion and edge risk hints for review.
 
-## Using it
+## Safer exports and recoverable work
 
-Drop a video in, or right click one in Finder and pick Open With. The app reads it, finds every cut, and sets the depth for each shot on its
-own. Press Convert. When it finishes, send it to the headset and open it in Photos.
+- Export preflight shows destination, name, size, audio and source/free-space problems before encoding.
+- Existing outputs are preserved, including when a re-export is canceled or fails. Destination names are sanitized and new files are published without replacing an existing file.
+- Failed file verification remains a failure with a readable report. Optional external checks clearly say Not checked when unavailable.
+- Decoded frame counts support variable-rate footage. Audio verification includes multiple tracks, timing, duration and language.
+- Automatic local workspace saving, explicit JSON sessions, reconnecting missing originals, durable export history and grouped editing Undo.
+- Visible-order range selection, keyboard queue reordering, batch settings subsets and stage-aware progress.
+- Failure messages stay until dismissed in a reserved message rail. Message history and export history remain accessible without covering the video.
+- Quit and cancellation wait for cleanup. Interrupted exports can restart; completed output files remain available.
 
-Before converting, look at the depth. **Compare eyes** flips between the left and right view,
-which makes bad depth obvious in about two seconds on a flat monitor with no glasses.
+## Local model tools
 
-## What is honest about this release
+Settings can import a compatible Core ML model, validate it with inference, record its checksum and return to the built-in model. Measure on This Mac compares compute options for per-frame depth inference. This is a calibration measurement, not a full export benchmark.
 
-It works, and it is not finished.
+The optional Download flow accepts a user-provided HTTPS ZIP URL and publisher checksum. Archive checks and inference validation run before activation; it does not supply a curated or automatically trusted model catalog.
 
-**Some shots show a cut out edge around people.** Where the depth boundary does not land
-exactly on a subject's silhouette, the warp tears and you see an outline. It is worst on
-people against distinct backgrounds and close to invisible on landscapes, crowds, water, and
-anything where depth changes gradually. Turning the strength down to Soft reduces it directly.
+Normal depth remains the default. The Steady temporal model is experimental and may be extremely slow. Still inspection uses Normal depth even when Steady is selected; render a proof to inspect Steady's output.
 
-**Objects can look internally flat**, like a pop up book, even when they sit at the right
-distance from each other.
+## Verification and release status
 
-Both are the signature failure of monocular 2D to 3D conversion. Feathering the disparity
-across depth discontinuities is the fix most likely to help and is not implemented yet.
-Contributions welcome.
+The CI workflow builds and runs XCTest regressions, excluding the generated-media test that needs a physical Mac's spatial-video encoder. Local XCTest and native self-tests exercise that media gate on physical Apple silicon hardware. They do not run on every ordinary build. The temporal model self-test is optional through `--selftest --include-video-model`; the writer-only diagnostic is `--selftest --writerprobe`.
 
-**The Steady depth model is impractical.** It is correct and holds depth perfectly still, but
-measured at roughly 0.04 fps against 30 fps for the default. It ships labelled slow, behind a
-warning. Do not point it at a film.
+The release script runs native checks and regression tests before notarization and packaging. Passing code or file checks does not prove visual depth quality. Review exports on Vision Pro before releasing a build. These notes describe development changes, not a newly published or notarized download. The existing signed download remains [v1.2.3](https://github.com/th3quietloop/make-it-3d/releases/tag/v1.2.3).
 
-**HDR is flattened** to SDR Rec. 709, because the warp renders into 8 bit BGRA.
+## Remaining limits
 
-## How it is verified
+Depth can still produce cutout edges, halos, incorrect ordering or objects that look internally flat. Motion cleanup and edge controls are tradeoffs, not comfort guarantees. Desktop playback of a proof shows one eye. Judge stereoscopic depth and comfort on the headset.
 
-Eight automated checks run on every build, including one that reads the finished file with
-Apple's own `spatial` command line tool rather than trusting the app's own bookkeeping. Two
-of them measure rendered pixels, because three separate bugs in this project looked completely
-correct on screen and were only caught by counting.
+HDR preservation is not implemented; an experimental writer capability probe does not add HDR export. Session files reference media paths and do not package the source videos. Canceled exports restart from the beginning.
 
-## Under the hood
-
-Depth Anything V2 Small on the Neural Engine, a Metal mesh warp with disocclusion filling from
-earlier frames, and MV-HEVC written through `AVAssetWriterInputTaggedPixelBufferGroupAdaptor`.
-Audio is passed through untouched.
-
-Both depth models are Apache 2.0. See [NOTICE.md](NOTICE.md). Everything else is MIT.
+Requires macOS 15 or later on Apple silicon. Build and command instructions are in [README.md](README.md). The app is MIT licensed; see [NOTICE.md](NOTICE.md) for model notices and [sample attribution](MakeIt3D/Resources/Samples/SAMPLE_ATTRIBUTION.md) for the included film excerpt.

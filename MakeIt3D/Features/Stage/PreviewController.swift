@@ -4,226 +4,232 @@ import CoreMedia
 import CoreGraphics
 import Observation
 
-/// Drives the stage: owns the preview engine, holds the current rendering, and
-/// runs the wiggle alternation.
+enum PreviewComparison: String, CaseIterable, Identifiable {
+    case draft, automatic, original
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .draft: "Your settings"
+        case .automatic: "Automatic"
+        case .original: "Original"
+        }
+    }
+}
+
+/// A single inspection request owns the image, its settings and its measurement.
 @Observable
 @MainActor
 final class PreviewController {
-
-    /// What the stage draws right now.
     private(set) var displayed: CGImage?
     private(set) var errorMessage: String?
-
-    /// True only while the depth model is running on a new frame. Parameter
-    /// changes do not set this, because they do not run the model.
     private(set) var isReadingDepth = false
-
-    /// True on the very first run, when Core ML still has to load the model
-    /// onto the Neural Engine. That takes seconds, and a stage that just says
-    /// "Reading depth" with no movement for that long reads as a hang.
     private(set) var isWarmingUp = false
-
-    /// How much depth the visible frame has. Published from here rather than
-    /// queried by the inspector, so the verdict on screen always belongs to the
-    /// image next to it.
+    private(set) var isRendering = false
+    private(set) var displayedSeconds: Double?
+    private(set) var isExactPreview = false
     private(set) var reading: DepthReading?
-
-    /// Wiggle starts paused, always.
-    ///
-    /// Entering the mode used to begin a 6Hz hard cut flash unprompted, which
-    /// is squarely in vestibular trigger territory. The first alternation is
-    /// now a choice, and under Reduce Motion the mode stays a still comparison
-    /// the user steps through by hand.
-    var isWigglePlaying = false {
-        didSet { restartWiggle() }
-    }
-
-    var reduceMotion: Bool {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-    }
-
-    /// Which eye the stage is parked on while the wiggle is paused.
     private(set) var showingLeft = true
+    private(set) var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
-    private let engine = PreviewEngine()
+    var comparison: PreviewComparison = .draft {
+        didSet { if comparison != oldValue { rerender() } }
+    }
+    /// Native-size inspection requests the source's actual pixel dimensions.
+    /// Scaling a 720p preview up is not a 100% inspection of a 4K export.
+    var inspectionAtNativeSize = false {
+        didSet { if inspectionAtNativeSize != oldValue { rerender() } }
+    }
+    var showReconstructionRisk = false {
+        didSet { if showReconstructionRisk != oldValue { rerender() } }
+    }
+    var isWigglePlaying = false {
+        didSet {
+            if isWigglePlaying && reduceMotion { isWigglePlaying = false }
+            restartWiggle()
+        }
+    }
+
+    private struct Request {
+        let url: URL
+        let time: CMTime
+        let mode: PreviewMode
+        let tuning: EngineTuning
+        let automaticTuning: EngineTuning?
+    }
+    private var engine = PreviewEngine()
     private var pair: PreviewImage?
-
+    private var lastRequest: Request?
     private var renderTask: Task<Void, Never>?
     private var wiggleTask: Task<Void, Never>?
-
-    private var currentMode: PreviewMode = .source
+    private var generation: UInt64 = 0
     private var hasLoadedModelOnce = false
+    @ObservationIgnored private var accessibilityObserver: PreviewNotificationObservation?
 
-    /// Smoothing for the depth verdict. The raw value moves frame to frame
-    /// because normalization is per frame, and a verdict that flickers between
-    /// two words as you scrub reads as a broken instrument.
-    private var smoothedLoadForward: Float = 0
-    private var smoothedLoadBehind: Float = 0
-    private var hasSmoothingHistory = false
-    private let smoothingAlpha: Float = 0.35
-    /// The settings the last reading was taken under.
-    private var lastTuning: EngineTuning?
+    init() {
+        let center = NSWorkspace.shared.notificationCenter
+        let token = center.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                if self.reduceMotion { self.isWigglePlaying = false }
+            }
+        }
+        accessibilityObserver = PreviewNotificationObservation(center: center, token: token)
+    }
 
-    // MARK: Updating
-
-    /// Refreshes the stage. `frameChanged` tells the controller whether the
-    /// model has to run again, which is the difference between a scrub and a
-    /// slider drag.
     func update(
-        url: URL,
-        time: CMTime,
-        mode: PreviewMode,
-        tuning: EngineTuning,
-        frameChanged: Bool
+        url: URL, time: CMTime, mode: PreviewMode, tuning: EngineTuning,
+        frameChanged: Bool, automaticTuning: EngineTuning? = nil
     ) {
+        let sourceChanged = lastRequest?.url != url
+        let modeChanged = lastRequest?.mode != mode
+        if sourceChanged || modeChanged {
+            isWigglePlaying = false
+            showingLeft = true
+        }
+        if sourceChanged {
+            displayed = nil
+            displayedSeconds = nil
+            reading = nil
+            pair = nil
+        }
+        let request = Request(url: url, time: time, mode: mode, tuning: tuning, automaticTuning: automaticTuning)
+        lastRequest = request
+        start(request, frameChanged: frameChanged)
+    }
+
+    private func rerender() {
+        guard let lastRequest else { return }
+        start(lastRequest, frameChanged: false)
+    }
+
+    private func start(_ request: Request, frameChanged: Bool) {
         renderTask?.cancel()
-        let modeChanged = currentMode != mode
-        currentMode = mode
-        let tuningChanged = lastTuning != tuning
-        lastTuning = tuning
-
-        // A new frame invalidates the smoothing history. So does a change to
-        // the settings, which is the fix for a real lie: the smoother exists to
-        // stop the readout jittering as depth wobbles frame to frame, but when
-        // the strength itself changes the new value is not a wobble, it is the
-        // answer. Easing toward it meant Auto could set a strength whose own
-        // arithmetic says "good depth" while the gauge underneath still read
-        // "gentle" for another few refreshes.
-        if frameChanged || tuningChanged { hasSmoothingHistory = false }
-        if modeChanged { isWigglePlaying = false }
-
+        generation &+= 1
+        let thisGeneration = generation
+        let mode: PreviewMode = comparison == .original ? .source : request.mode
+        let tuning = comparison == .automatic ? (request.automaticTuning ?? request.tuning) : request.tuning
+        let fullResolution = inspectionAtNativeSize
+        let risk = showReconstructionRisk && comparison != .original
+        let needsDepth = mode != .source || risk
+        let engine = self.engine
+        isRendering = true
+        isExactPreview = false
+        isReadingDepth = needsDepth
+        isWarmingUp = needsDepth && !hasLoadedModelOnce
+        errorMessage = nil
         renderTask = Task { [weak self] in
             guard let self else { return }
-            if frameChanged {
-                self.isReadingDepth = true
-                if !self.hasLoadedModelOnce { self.isWarmingUp = true }
-            }
             defer {
-                self.isReadingDepth = false
-                self.isWarmingUp = false
-            }
-
-            do {
-                // Two passes while the playhead is moving. The first lands on
-                // the nearest sync sample, which is what keeps a drag feeling
-                // attached to the pointer on a long GOP file. The second is the
-                // exact frame, and only ever runs once the user stops moving,
-                // because the next update cancels this task before it gets
-                // there.
-                if frameChanged {
-                    try await self.render(url: url, time: time, mode: mode, tuning: tuning, precise: false)
-                    guard !Task.isCancelled else { return }
-                    try await Task.sleep(for: .seconds(Tokens.Motion.scrubSettle))
-                    guard !Task.isCancelled else { return }
+                // A cancelled older seek must not hide the new seek's spinner.
+                if self.generation == thisGeneration {
+                    self.isRendering = false
+                    self.isReadingDepth = false
+                    self.isWarmingUp = false
                 }
-
-                try await self.render(url: url, time: time, mode: mode, tuning: tuning, precise: true)
+            }
+            do {
+                if frameChanged && !fullResolution {
+                    let first = try await engine.makePreview(
+                        url: request.url, time: request.time, mode: mode, tuning: tuning,
+                        precise: false, fullResolution: false, reconstructionRisk: risk
+                    )
+                    try Task.checkCancellation()
+                    guard self.generation == thisGeneration else { return }
+                    self.publish(first, needsDepth: needsDepth)
+                    try await Task.sleep(for: .seconds(Tokens.Motion.scrubSettle))
+                }
+                let final = try await engine.makePreview(
+                    url: request.url, time: request.time, mode: mode, tuning: tuning,
+                    precise: true, fullResolution: fullResolution, reconstructionRisk: risk
+                )
+                try Task.checkCancellation()
+                guard self.generation == thisGeneration else { return }
+                self.publish(final, needsDepth: needsDepth)
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self.generation == thisGeneration else { return }
                 self.errorMessage = error.localizedDescription
-                self.displayed = nil
                 self.reading = nil
+                // Keep a previous image visible with an explicit error, rather
+                // than replacing a useful picture with an empty black stage.
+                self.isExactPreview = false
             }
         }
     }
 
-    /// One pass: decode, run the model if the frame moved, render, publish.
-    private func render(
-        url: URL,
-        time: CMTime,
-        mode: PreviewMode,
-        tuning: EngineTuning,
-        precise: Bool
-    ) async throws {
-        try await engine.prepare(url: url, time: time, tuning: tuning, precise: precise)
-        guard !Task.isCancelled else { return }
-        hasLoadedModelOnce = true
-
-        let image = try await engine.render(mode: mode, tuning: tuning)
-        guard !Task.isCancelled else { return }
-
-        pair = image
-        showingLeft = true
-        displayed = image.left
+    private func publish(_ result: PreviewRender, needsDepth: Bool) {
+        pair = result.image
+        displayed = showingLeft ? result.image.left : (result.image.right ?? result.image.left)
+        displayedSeconds = result.actualSeconds
+        isExactPreview = result.isPrecise
         errorMessage = nil
-
-        if let range = await engine.disparityRange(tuning: tuning),
-           let width = await engine.frameWidth {
-            let content = await engine.depthContent
-            updateReading(
-                forward: range.near, behind: range.far,
-                frameWidth: width, content: content
+        if needsDepth { hasLoadedModelOnce = true }
+        if let disparity = result.disparity {
+            reading = DepthReading(
+                forward: disparity.near, behind: disparity.far,
+                frameWidth: result.frameWidth, content: result.content
             )
+        } else {
+            reading = nil
         }
         restartWiggle()
     }
 
-    private func updateReading(
-        forward: Float, behind: Float, frameWidth: Int, content: DepthContent
-    ) {
-        if hasSmoothingHistory {
-            smoothedLoadForward += (forward - smoothedLoadForward) * smoothingAlpha
-            smoothedLoadBehind += (behind - smoothedLoadBehind) * smoothingAlpha
-        } else {
-            smoothedLoadForward = forward
-            smoothedLoadBehind = behind
-            hasSmoothingHistory = true
-        }
-        reading = DepthReading(
-            forward: smoothedLoadForward,
-            behind: smoothedLoadBehind,
-            frameWidth: frameWidth,
-            content: content
-        )
-    }
-
     func clear() {
+        generation &+= 1
         renderTask?.cancel()
         wiggleTask?.cancel()
         renderTask = nil
         wiggleTask = nil
+        lastRequest = nil
         displayed = nil
+        displayedSeconds = nil
         pair = nil
         errorMessage = nil
         reading = nil
-        hasSmoothingHistory = false
-        Task { await engine.invalidate() }
+        isReadingDepth = false
+        isWarmingUp = false
+        isRendering = false
+        isExactPreview = false
+        isWigglePlaying = false
+        let retiredEngine = engine
+        engine = PreviewEngine()
+        hasLoadedModelOnce = false
+        Task { await retiredEngine.invalidate() }
     }
 
-    // MARK: Wiggle
-
-    /// Shows the other eye. Under Reduce Motion this is how the mode is used:
-    /// a still comparison the user steps through, rather than a flash.
     func flipEye() {
         guard let pair, let right = pair.right else { return }
         showingLeft.toggle()
         displayed = showingLeft ? pair.left : right
     }
 
-    /// Hard cut alternation between the two synthesized eyes. No crossfade:
-    /// a crossfade averages the two views and kills the effect the mode exists
-    /// for.
+    func showEye(left: Bool) {
+        guard showingLeft != left else { return }
+        flipEye()
+    }
+
     private func restartWiggle() {
         wiggleTask?.cancel()
         wiggleTask = nil
-
-        guard currentMode == .wiggle, let pair, pair.isPair, isWigglePlaying, !reduceMotion else {
-            if let pair, currentMode == .wiggle {
-                displayed = showingLeft ? pair.left : (pair.right ?? pair.left)
-            }
-            return
-        }
-
-        let interval = UInt64(Tokens.Motion.wiggleInterval * 1_000_000_000)
+        guard lastRequest?.mode == .wiggle, comparison != .original,
+              let pair, pair.isPair, isWigglePlaying, !reduceMotion else { return }
         wiggleTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: interval)
+                do { try await Task.sleep(for: .seconds(Tokens.Motion.wiggleInterval)) }
+                catch { return }
                 guard let self, !Task.isCancelled else { return }
-                guard let pair = self.pair, let right = pair.right else { return }
-                self.showingLeft.toggle()
-                self.displayed = self.showingLeft ? pair.left : right
+                guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+                    self.reduceMotion = true
+                    self.isWigglePlaying = false
+                    return
+                }
+                self.flipEye()
             }
         }
     }

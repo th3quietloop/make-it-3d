@@ -40,16 +40,25 @@ struct Toast: Identifiable, Equatable {
 final class ToastCenter {
 
     private(set) var toasts: [Toast] = []
+    private(set) var history: [Toast] = []
+
+    var pendingFailureCount: Int { toasts.filter { $0.tone == .failure }.count }
+    var currentMessage: Toast? {
+        toasts.first { $0.tone == .failure } ?? toasts.last
+    }
 
     /// Two at a time. A stack taller than this stops being feedback and starts
     /// being a log.
     private let maximumVisible = 2
 
     func show(_ toast: Toast) {
+        history.append(toast)
+        if history.count > 200 { history.removeFirst(history.count - 200) }
         toasts.append(toast)
-        if toasts.count > maximumVisible {
-            toasts.removeFirst(toasts.count - maximumVisible)
-        }
+        // Routine notices cannot evict an unresolved error or an unread lesson.
+        let transient = toasts.filter { $0.tone == .info || $0.tone == .success }
+        let expired = Set(transient.dropLast(maximumVisible).map(\.id))
+        toasts.removeAll { expired.contains($0.id) }
 
         // Failures and guidance both stay put. A message you missed is a
         // message that failed.
@@ -87,8 +96,11 @@ final class ToastCenter {
         ))
     }
 
-    func failure(_ title: String, detail: String? = nil) {
-        show(Toast(tone: .failure, title: title, detail: detail))
+    func failure(
+        _ title: String, detail: String? = nil, actionLabel: String? = nil,
+        action: (@MainActor () -> Void)? = nil
+    ) {
+        show(Toast(tone: .failure, title: title, detail: detail, actionLabel: actionLabel, action: action))
     }
 
     /// Guidance is exclusive. Two lessons on screen at once is not twice the
@@ -105,6 +117,94 @@ final class ToastCenter {
             tone: .guidance, title: title, detail: detail,
             actionLabel: actionLabel, action: action
         ))
+    }
+}
+
+/// Reserves a small strip below the workspace instead of covering the image.
+struct ToastRail: View {
+    let center: ToastCenter
+    let onHistory: () -> Void
+
+    var body: some View {
+        if let toast = center.currentMessage {
+            HStack(spacing: Tokens.Space.s) {
+                Image(systemName: toast.tone == .failure ? "exclamationmark.triangle" :
+                      toast.tone == .guidance ? "lightbulb" : "info.circle")
+                    .foregroundStyle(toast.tone == .failure ? Tokens.Palette.errorText : Tokens.Palette.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(toast.title).font(Tokens.Font.bodyMedium)
+                    if let detail = toast.detail {
+                        Text(detail).font(Tokens.Font.caption)
+                            .foregroundStyle(Tokens.Palette.textSecondary)
+                            .lineLimit(2)
+                    }
+                }
+                Spacer(minLength: Tokens.Space.s)
+                if let label = toast.actionLabel, let action = toast.action {
+                    Button(label) { action(); center.dismiss(toast.id) }
+                        .foregroundStyle(Tokens.Palette.accent)
+                }
+                if center.pendingFailureCount > 1 {
+                    Button("\(center.pendingFailureCount) issues", action: onHistory)
+                }
+                Button { center.dismiss(toast.id) } label: { Image(systemName: "xmark") }
+                    .accessibilityLabel("Dismiss \(toast.title)")
+                    .frame(width: Tokens.Layout.minTarget, height: Tokens.Layout.minTarget)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, Tokens.Space.m)
+            .padding(.vertical, Tokens.Space.xs)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Tokens.Palette.panelRaised)
+            .accessibilityElement(children: .contain)
+        }
+    }
+}
+
+struct ActivityHistoryView: View {
+    let center: ToastCenter
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.m) {
+            HStack {
+                Text("Activity").font(Tokens.Font.rowTitle)
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            if center.history.isEmpty {
+                ContentUnavailableView("No activity yet", systemImage: "clock",
+                                       description: Text("Analysis, exports, and issues appear here."))
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: Tokens.Space.m) {
+                        ForEach(center.history.reversed()) { toast in
+                            HStack(alignment: .top, spacing: Tokens.Space.s) {
+                                Image(systemName: toast.tone == .failure ? "exclamationmark.triangle" : "circle.fill")
+                                    .foregroundStyle(toast.tone == .failure ? Tokens.Palette.errorText : Tokens.Palette.accent)
+                                    .frame(width: 20)
+                                VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+                                    Text(toast.title).font(Tokens.Font.bodyMedium)
+                                    if let detail = toast.detail {
+                                        Text(detail).font(Tokens.Font.caption)
+                                            .foregroundStyle(Tokens.Palette.textSecondary)
+                                            .textSelection(.enabled)
+                                    }
+                                    if let label = toast.actionLabel, let action = toast.action {
+                                        Button(label, action: action)
+                                    }
+                                }
+                                Spacer()
+                            }
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+        .padding(Tokens.Space.l)
+        .frame(width: 560, height: 440)
+        .background(Tokens.Palette.panel)
     }
 }
 

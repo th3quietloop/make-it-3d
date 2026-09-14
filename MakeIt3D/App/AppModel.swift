@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 final class Conversion: Identifiable {
     enum FailureKind: Equatable {
         case intake
+        case analysis
         case conversion
     }
 
@@ -44,13 +45,14 @@ final class Conversion: Identifiable {
         }
     }
 
-    let id = UUID()
+    let id: UUID
     let sourceURL: URL
     var status: Status = .probing
     var probe: SourceProbe?
     var thumbnail: CGImage?
     var report: VerificationReport?
     var failureKind: FailureKind?
+    var sourceMissing = false
 
     /// The film broken into shots, each with settings solved for it. nil until
     /// Auto has been run on this file.
@@ -87,20 +89,35 @@ final class Conversion: Identifiable {
     /// than a mutation of the finished one.
     var tuning: EngineTuning = .default
     var exportedTuning: EngineTuning?
+    var depthOverrides = DepthOverrides()
+    var exportedDepthOverrides: DepthOverrides?
+    var exportedShotPlan: ShotPlan?
+    var bookmarks: [Double] = []
+
+    func automaticTuning(at time: CMTime) -> EngineTuning {
+        guard let shot = shotPlan?.shot(at: time) else { return tuning }
+        return AutoTune.apply(shot.settings, to: tuning)
+    }
+
+    func effectiveTuning(at time: CMTime) -> EngineTuning {
+        depthOverrides.applying(to: automaticTuning(at: time), shotID: shotPlan?.shot(at: time)?.id)
+    }
 
     /// A finished row whose settings have since changed offers a re-export.
     var settingsChangedSinceExport: Bool {
         guard let exportedTuning, status.isDone else { return false }
-        return exportedTuning != tuning
+        return exportedTuning != tuning || (exportedDepthOverrides ?? .init()) != depthOverrides
+            || (exportedShotPlan != nil && exportedShotPlan != shotPlan)
     }
 
     var canMoveInQueue: Bool {
-        planningProgress == nil && (status.canMoveInQueue || settingsChangedSinceExport)
+        !sourceMissing && planningProgress == nil && (status.canMoveInQueue || settingsChangedSinceExport)
     }
 
     var displayName: String { sourceURL.deletingPathExtension().lastPathComponent }
 
-    init(sourceURL: URL) {
+    init(sourceURL: URL, id: UUID = UUID()) {
+        self.id = id
         self.sourceURL = sourceURL
     }
 }
@@ -148,7 +165,23 @@ final class AppModel {
         @escaping @Sendable (ConversionEvent) -> Void
     ) async -> Void
 
-    var conversions: [Conversion] = []
+    var conversions: [Conversion] = [] { didSet { scheduleAutosave() } }
+    var visibleQueueIDs: [UUID]? = nil
+    var adjustmentScope: AdjustmentScope = .shot
+    var workspace = WorkspaceState()
+    var playback = PreviewPlaybackController()
+    let editUndoManager = UndoManager()
+    var proofTask: Task<Void, Never>?
+    var autosaveTask: Task<Void, Never>?
+    var analysisTask: Task<Void, Never>?
+    var analysisWorker: Task<ShotPlan, Error>?
+    var analysingID: UUID?
+    var analysisWaiting: [UUID] = []
+    var analysisAnnouncements: Set<UUID> = []
+    var isRestoring = false
+    var isShuttingDown = false
+    var tuningEditDepth = 0
+    var tuningEditCaptured: Set<UUID> = []
 
     /// The row driving the stage. One row, always, because there is one stage.
     var selectionID: Conversion.ID?
@@ -195,7 +228,7 @@ final class AppModel {
     /// Rows the queue would pick up on its own.
     var readyToConvert: [Conversion] {
         conversions.filter {
-            $0.planningProgress == nil
+            !$0.sourceMissing && $0.planningProgress == nil
                 && ($0.status.isReady || $0.settingsChangedSinceExport)
         }
     }
@@ -221,7 +254,7 @@ final class AppModel {
     /// another is worse than a button that does nothing.
     var selectedReady: [Conversion] {
         selectedConversions.filter {
-            $0.planningProgress == nil
+            !$0.sourceMissing && $0.planningProgress == nil
                 && ($0.status.isReady || $0.settingsChangedSinceExport)
         }
     }
@@ -250,7 +283,7 @@ final class AppModel {
 
     // MARK: Preview
 
-    let preview = PreviewController()
+    var preview = PreviewController()
     var previewMode: PreviewMode = .source {
         didSet {
             refreshPreview(frameChanged: false)
@@ -260,8 +293,8 @@ final class AppModel {
     /// Playhead position in seconds.
     var playhead: Double = 0
 
-    var inspectorVisible = true
-    var sidebarVisible = true
+    var inspectorVisible = true { didSet { scheduleAutosave() } }
+    var sidebarVisible = true { didSet { scheduleAutosave() } }
 
     /// Where exports land.
     ///
@@ -274,12 +307,13 @@ final class AppModel {
     /// setting nobody can find is a setting that does not exist.
     var outputFolder: URL = FileManager.default.urls(
         for: .downloadsDirectory, in: .userDomainMask
-    ).first ?? FileManager.default.homeDirectoryForCurrentUser
+    ).first ?? FileManager.default.homeDirectoryForCurrentUser { didSet { scheduleAutosave() } }
 
     /// Filename pattern for exports. `{name}` is replaced with the source name.
-    var filenamePattern: String = "{name}_spatial"
+    var filenamePattern: String = "{name}_spatial" { didSet { scheduleAutosave() } }
 
     private struct QueueRunContext {
+        let id = UUID()
         let scope: QueueRunScope
         var admittedIDs: Set<Conversion.ID>
         var completedIDs: Set<Conversion.ID> = []
@@ -299,12 +333,12 @@ final class AppModel {
     }
 
     private var runContext: QueueRunContext?
-    private var queueDriverTask: Task<Void, Never>?
-    private var activePipelineTask: Task<Void, Never>?
+    var queueDriverTask: Task<Void, Never>?
+    var activePipelineTask: Task<Void, Never>?
     private var activeAttemptID: UUID?
     private var activeCancellation: ActiveCancellation?
-    private let conversionRunner: ConversionRunner
-    private let systemFeedbackEnabled: Bool
+    let conversionRunner: ConversionRunner
+    let systemFeedbackEnabled: Bool
 
     var selection: Conversion? {
         guard let selectionID else { return nil }
@@ -346,6 +380,7 @@ final class AppModel {
     }
 
     var currentRunScope: QueueRunScope? { runContext?.scope }
+    var currentRunIdentifier: UUID? { runContext?.id }
 
     var nextWaitingConversion: Conversion? {
         queuedWaiting.first { conversion in
@@ -429,8 +464,11 @@ final class AppModel {
                 if let measured = conversion.estimatedSecondsRemaining {
                     summary.knownRemainingSeconds += measured
                 } else {
-                    summary.knownRemainingSeconds += Double(probe.estimatedFrameCount)
-                        / conversion.tuning.depthModel.measuredFramesPerSecond
+                    if let learned = learnedEstimate(for: conversion) {
+                        summary.knownRemainingSeconds += (learned.lowerBound + learned.upperBound) / 2
+                    } else {
+                        summary.knownRemainingSeconds += Double(probe.estimatedFrameCount) / conversion.tuning.depthModel.measuredFramesPerSecond
+                    }
                 }
             } else {
                 summary.unknownSizeCount += 1
@@ -475,9 +513,14 @@ final class AppModel {
         systemFeedbackEnabled: Bool = true
     ) {
         self.conversionRunner = conversionRunner
-        self.systemFeedbackEnabled = systemFeedbackEnabled
+        let underTest = ["XCTestConfigurationFilePath", "XCTestBundlePath", "XCInjectBundleInto"].contains { ProcessInfo.processInfo.environment[$0] != nil }
+        let interactive = systemFeedbackEnabled && !underTest && !CommandLine.arguments.contains { ["--selftest", "--analyse", "--analyze", "--makeicon"].contains($0) }
+        self.systemFeedbackEnabled = interactive
+        editUndoManager.groupsByEvent = false
+        playback.onTimeChanged = { [weak self] seconds in self?.playhead = seconds }
+        playback.onPlaybackStopped = { [weak self] in self?.refreshPreview(frameChanged: true) }
         checkModelAvailability()
-        addLaunchArgumentFiles()
+        if interactive { restoreAutosave(); addLaunchArgumentFiles() }
     }
 
     /// Any video paths passed on the command line land in the queue at launch.
@@ -583,121 +626,107 @@ final class AppModel {
     ///   progress, and a toast for something nobody asked for is noise.
     func autoTune(_ conversion: Conversion, announce: Bool = true) {
         guard conversion.planningProgress == nil, !conversion.status.isConverting else { return }
-        // Planning begins now, not once probing catches up. Keeping this marker
-        // set prevents a just-probed row from starting with pre-plan settings.
         conversion.planningProgress = 0
-        guard conversion.probe != nil else {
-            // Probing is async and a dropped file gets here first. Wait for it
-            // rather than telling the user to try again, which is asking them
-            // to do the app's waiting for it.
-            Task { [weak self] in
-                for _ in 0..<40 {
-                    try? await Task.sleep(for: .milliseconds(250))
-                    guard let self else { return }
-                    if conversion.probe != nil {
-                        self.runAutoTune(conversion, announce: announce)
-                        return
-                    }
-                }
-                guard let self else { return }
-                conversion.planningProgress = nil
-                self.scheduleQueueDriverIfNeeded()
-            }
-            return
-        }
-        runAutoTune(conversion, announce: announce)
+        if !analysisWaiting.contains(conversion.id) { analysisWaiting.append(conversion.id) }
+        if announce { analysisAnnouncements.insert(conversion.id) }
+        scheduleAnalysis()
     }
 
-    private func runAutoTune(_ conversion: Conversion, announce: Bool) {
-        guard let probe = conversion.probe else {
+    /// One cancellable analysis at a time; the focused video is next.
+    func scheduleAnalysis() {
+        guard !isShuttingDown, !workspace.modelOperationInProgress, analysisTask == nil, proofTask == nil, !isConverting else { return }
+        analysisWaiting.removeAll { id in !conversions.contains { $0.id == id } }
+        let ready = analysisWaiting.filter { id in conversions.contains { $0.id == id && $0.probe != nil } }
+        guard let id = ready.first(where: { $0 == selectionID }) ?? ready.first,
+              let conversion = conversions.first(where: { $0.id == id }), let probe = conversion.probe else { return }
+        analysisWaiting.removeAll { $0 == id }
+        analysingID = id
+        let tuning = conversion.tuning
+        let cacheURL = systemFeedbackEnabled ? WorkspaceStorage.analysisURL(source: conversion.sourceURL, tuning: tuning) : nil
+        let cached = cacheURL.flatMap { try? WorkspaceStorage.read(ShotPlan.self, from: $0) }
+        if let cached, !cached.isEmpty {
+            conversion.shotPlan = cached
             conversion.planningProgress = nil
-            scheduleQueueDriverIfNeeded()
+            analysingID = nil
+            if id == selectionID { refreshPreview(frameChanged: false) }
+            scheduleAutosave(); scheduleQueueDriverIfNeeded(); scheduleAnalysis()
             return
         }
-        if announce {
-            toasts.info("Looking at every shot", detail: "Sampling the film to work out its depth.")
-        }
-
-        Task { [weak self] in
+        analysisTask = Task { [weak self] in
+            guard let self else { return }
             defer {
                 conversion.planningProgress = nil
-                self?.scheduleQueueDriverIfNeeded()
+                self.analysingID = nil
+                self.analysisTask = nil
+                self.analysisWorker = nil
+                self.scheduleQueueDriverIfNeeded()
+                self.scheduleAnalysis()
             }
             do {
-                let estimator = try CoreMLDepthEstimator()
-                let tuning = conversion.tuning
-                let plan = try await ShotPlanner.plan(
-                    for: probe,
-                    estimator: estimator,
-                    tuning: tuning
-                ) { fraction in
-                    Task { @MainActor in conversion.planningProgress = fraction }
+                let worker = Task.detached(priority: .utility) {
+                    let estimator = try CoreMLDepthEstimator(computePreference: tuning.computePreference)
+                    return try await ShotPlanner.plan(for: probe, estimator: estimator, tuning: tuning) { fraction in
+                        Task { @MainActor [weak self] in
+                            guard self?.analysingID == id else { return }
+                            conversion.planningProgress = fraction
+                        }
+                    }
                 }
-                guard let self else { return }
-                self.applied(plan, to: conversion)
+                self.analysisWorker = worker
+                let plan = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+                try Task.checkCancellation()
+                guard self.conversions.contains(where: { $0.id == id }) else { return }
+                guard !plan.isEmpty else { throw EngineValidationError.invalid("The source produced no analysable frames") }
+                conversion.shotPlan = plan
+                if let cacheURL { try? WorkspaceStorage.write(plan, to: cacheURL); WorkspaceStorage.pruneAnalysisCache() }
+                self.workspace.performance.append(.init(model: .perFrame, width: probe.width, height: probe.height, frames: plan.samplesTaken, seconds: plan.seconds, analysis: true))
+                if id == self.selectionID { self.refreshPreview(frameChanged: false) }
+                if self.analysisAnnouncements.remove(id) != nil { self.toasts.success("Automatic depth applied", detail: plan.summary) }
+                self.scheduleAutosave()
+            } catch is CancellationError {
             } catch {
-                self?.toasts.failure(
-                    "Couldn't analyse \(conversion.displayName)",
-                    detail: error.localizedDescription
-                )
+                if !conversion.status.isDone { conversion.status = .failed("Analysis failed: " + error.localizedDescription) }
+                conversion.failureKind = .analysis
+                self.recordFailureInCurrentRun(conversion.id)
+                self.recordFailedAttempt(conversion, message: "Analysis failed: " + error.localizedDescription)
+                self.toasts.failure("Couldn't analyse \(conversion.displayName)", detail: error.localizedDescription)
             }
         }
     }
 
-    private func applied(_ plan: ShotPlan, to conversion: Conversion) {
-        conversion.shotPlan = plan
-        guard let first = plan.shots.first else {
-            toasts.failure("Couldn't find any shots", detail: "The file may be too short to sample.")
-            return
-        }
-
-        // The live dials follow whichever shot the playhead is in, so the
-        // inspector keeps telling the truth about what you are looking at.
-        let atPlayhead = plan.shot(at: CMTime(seconds: playhead, preferredTimescale: 600)) ?? first
-        conversion.tuning = AutoTune.apply(atPlayhead.settings, to: conversion.tuning)
-        refreshPreview(frameChanged: false)
-
-        toasts.success(
-            plan.shots.count == 1 ? "Tuned this shot" : "Tuned \(plan.shots.count) shots",
-            detail: plan.summary
-        )
+    func cancelAnalysis(_ conversion: Conversion) {
+        analysisWaiting.removeAll { $0 == conversion.id }
+        if analysingID == conversion.id { analysisWorker?.cancel(); analysisTask?.cancel() }
+        conversion.planningProgress = nil
     }
 
-    /// True when the dials no longer say what Auto set them to.
-    ///
-    /// This is the only condition under which re-running the analysis means
-    /// anything. Auto is deterministic: same file, same sampling interval, same
-    /// model, same thresholds, byte identical result. A button offering to run
-    /// it again could not change the outcome, and offering to redo something
-    /// implies the first answer was provisional when it was not.
     func hasDriftedFromAuto(_ conversion: Conversion) -> Bool {
-        guard let plan = conversion.shotPlan else { return false }
-        let time = CMTime(seconds: playhead, preferredTimescale: 600)
-        guard let shot = plan.shot(at: time) else { return false }
-        return AutoTune.apply(shot.settings, to: conversion.tuning) != conversion.tuning
+        let times = adjustmentScope == .video
+            ? conversion.shotPlan?.shots.map(\.midpoint) ?? [.zero]
+            : [CMTime(seconds: playhead, preferredTimescale: 600)]
+        return times.contains { time in
+            let automatic = conversion.automaticTuning(at: time), draft = conversion.effectiveTuning(at: time)
+            return abs(automatic.disparityScale - draft.disparityScale) > 0.000001 || abs(automatic.convergence - draft.convergence) > 0.000001
+        }
     }
 
-    /// Puts the automatic answer back.
     func returnToAutomatic(_ conversion: Conversion) {
         guard !conversion.status.isConverting else { return }
-        guard let plan = conversion.shotPlan else { return }
-        let time = CMTime(seconds: playhead, preferredTimescale: 600)
-        guard let shot = plan.shot(at: time) else { return }
-        conversion.tuning = AutoTune.apply(shot.settings, to: conversion.tuning)
+        registerTuningUndo(for: conversion)
+        if adjustmentScope == .video {
+            conversion.depthOverrides = .init()
+        } else if let id = conversion.shotPlan?.shot(at: CMTime(seconds: playhead, preferredTimescale: 600))?.id {
+            // An explicit Auto value neutralizes an inherited whole-video override.
+            if conversion.depthOverrides.global != nil {
+                conversion.depthOverrides.shots[id] = .init(followsAutomatic: true)
+            } else { conversion.depthOverrides.shots.removeValue(forKey: id) }
+        } else { conversion.depthOverrides = .init() }
         refreshPreview(frameChanged: false)
-        toasts.info("Back to the automatic settings")
+        scheduleAutosave()
     }
 
-    /// Follows the playhead into a new shot and adopts its settings.
-    func adoptShotSettings(at seconds: Double, for conversion: Conversion) {
-        guard !conversion.status.isConverting else { return }
-        guard let plan = conversion.shotPlan else { return }
-        let time = CMTime(seconds: seconds, preferredTimescale: 600)
-        guard let shot = plan.shot(at: time) else { return }
-        let updated = AutoTune.apply(shot.settings, to: conversion.tuning)
-        guard updated != conversion.tuning else { return }
-        conversion.tuning = updated
-    }
+    /// Kept as a navigation hook. Settings are resolved, never mutated by navigation.
+    func adoptShotSettings(at seconds: Double, for conversion: Conversion) {}
 
     /// Picks where exports land. Reachable from the inspector as well as from
     /// Settings, because the moment someone wants to change it is the moment
@@ -721,6 +750,8 @@ final class AppModel {
     func clearFinished() {
         let ids = Set(finished.map(\.id))
         guard !ids.isEmpty else { return }
+        registerQueueUndo()
+        if let anchor = selectionAnchorID, ids.contains(anchor) { selectionAnchorID = nil }
         conversions.removeAll { ids.contains($0.id) }
         selectedIDs.subtract(ids)
         if var context = runContext {
@@ -734,10 +765,14 @@ final class AppModel {
             if let next = conversions.first {
                 selectionID = next.id
                 selectedIDs = [next.id]
+                playhead = 0
                 refreshPreview(frameChanged: true)
             } else {
                 selectionID = nil
                 selectedIDs = []
+                playhead = 0
+                playback.stop()
+                playback.clear()
                 preview.clear()
             }
         }
@@ -867,6 +902,7 @@ final class AppModel {
         for index in reordered.indices where reordered[index].canMoveInQueue {
             if let replacement = iterator.next() { reordered[index] = replacement }
         }
+        registerQueueUndo()
         conversions = reordered
 
         if announce {
@@ -910,6 +946,8 @@ final class AppModel {
             return
         }
 
+        registerQueueUndo()
+        removable.forEach { cancelAnalysis($0) }
         let removableIDs = Set(removable.map(\.id))
         conversions.removeAll { removableIDs.contains($0.id) }
         selectedIDs.subtract(removableIDs)
@@ -937,6 +975,7 @@ final class AppModel {
                 selectionID = nil
                 selectedIDs = []
                 playhead = 0
+                playback.clear()
                 preview.clear()
             }
         }
@@ -954,16 +993,13 @@ final class AppModel {
     // MARK: Selection
 
     /// Shift click: everything between the anchor and here.
-    func extendSelection(to conversion: Conversion) {
+    func extendSelection(to conversion: Conversion, visibleOrder: [UUID]? = nil) {
+        let order = visibleOrder ?? (visibleQueueIDs ?? displayedConversions.map(\.id))
         guard let anchor = selectionAnchorID ?? selectionID,
-              let start = displayedConversions.firstIndex(where: { $0.id == anchor }),
-              let end = displayedConversions.firstIndex(where: { $0.id == conversion.id })
-        else {
-            select(conversion)
-            return
+              let start = order.firstIndex(of: anchor), let end = order.firstIndex(of: conversion.id) else {
+            select(conversion); return
         }
-        let range = start <= end ? start...end : end...start
-        selectedIDs = Set(displayedConversions[range].map(\.id))
+        selectedIDs = Set(order[min(start, end)...max(start, end)])
         focus(conversion)
     }
 
@@ -982,10 +1018,10 @@ final class AppModel {
         }
     }
 
-    func selectAll() {
-        guard !conversions.isEmpty else { return }
-        selectedIDs = Set(conversions.map(\.id))
-        if selectionID == nil, let first = conversions.first { focus(first) }
+    func selectAll(visibleOrder: [UUID]? = nil) {
+        let order = visibleOrder ?? (visibleQueueIDs ?? conversions.map(\.id))
+        selectedIDs = Set(order)
+        if !order.contains(selectionID ?? UUID()), let first = conversions.first(where: { $0.id == order.first }) { focus(first) }
     }
 
     /// Moves the stage to a row without changing what is selected.
@@ -993,13 +1029,16 @@ final class AppModel {
         guard selectionID != conversion.id else { return }
         selectionID = conversion.id
         playhead = 0
+        playback.updateSource(url: conversion.sourceURL)
         refreshPreview(frameChanged: true)
+        scheduleAnalysis()
+        scheduleAutosave()
     }
 
     // MARK: Running the queue
 
-    private func startQueue(_ work: [Conversion], scope: QueueRunScope) {
-        guard queuePhase == .idle, queueDriverTask == nil, activePipelineTask == nil else { return }
+    func startQueue(_ work: [Conversion], scope: QueueRunScope) {
+        guard queuePhase == .idle, queueDriverTask == nil, activePipelineTask == nil, proofTask == nil, !workspace.modelOperationInProgress else { return }
         guard !work.isEmpty else { return }
 
         runContext = QueueRunContext(scope: scope, admittedIDs: Set(work.map(\.id)))
@@ -1046,7 +1085,7 @@ final class AppModel {
         runContext = context
     }
 
-    private func scheduleQueueDriverIfNeeded() {
+    func scheduleQueueDriverIfNeeded() {
         guard queuePhase == .running,
               queueDriverTask == nil,
               activePipelineTask == nil,
@@ -1130,6 +1169,11 @@ final class AppModel {
         let failed = runContext?.failedIDs.count ?? 0
         let skipped = runContext?.skippedIDs.count ?? 0
         let total = runContext?.admittedIDs.count ?? 0
+        let completedRunID = runContext?.id
+        if let completedRunID, total > 0 {
+            workspace.batches.insert(.init(id: completedRunID, total: total, completed: completed, failed: failed, skipped: skipped), at: 0)
+            workspace.batches = Array(workspace.batches.prefix(100))
+        }
 
         runContext = nil
         queuePhase = .idle
@@ -1138,11 +1182,17 @@ final class AppModel {
         activeAttemptID = nil
         activeCancellation = nil
 
+        scheduleAnalysis()
+        scheduleAutosave()
         guard announce, total > 1 else { return }
         var details = ["\(completed) ready to send"]
         if failed > 0 { details.append("\(failed) failed") }
         if skipped > 0 { details.append("\(skipped) skipped") }
-        toasts.success("Queue finished", detail: details.joined(separator: " • "))
+        if failed > 0 {
+            toasts.failure("Batch needs attention", detail: details.joined(separator: " • "), actionLabel: "View History") { self.workspace.selectedBatchID = completedRunID; self.workspace.historyPresented = true }
+        } else {
+            toasts.success("Batch finished", detail: details.joined(separator: " • "), actionLabel: "View Results") { self.workspace.selectedBatchID = completedRunID; self.workspace.historyPresented = true }
+        }
     }
 
     func pauseAfterCurrent() {
@@ -1230,19 +1280,16 @@ final class AppModel {
     func addSampleClip() {
         guard !isGeneratingSample else { return }
         isGeneratingSample = true
-        toasts.info("Making a sample clip", detail: "This takes a few seconds.")
-
-        Task {
-            defer { isGeneratingSample = false }
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("MakeIt3DSample.mov")
-            do {
-                let clip = try await SyntheticClip.generate(at: url)
-                add(urls: [clip])
-            } catch {
-                toasts.failure("Couldn't make the sample clip", detail: error.localizedDescription)
-            }
-        }
+        defer { isGeneratingSample = false }
+        do {
+            guard let bundled = SampleClipSource.bundledURL else { throw CocoaError(.fileNoSuchFile) }
+            let folder = WorkspaceStorage.directory.appendingPathComponent("Samples", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let url = folder.appendingPathComponent("ForestMorning.mp4")
+            if !FileManager.default.fileExists(atPath: url.path) { try FileManager.default.copyItem(at: bundled, to: url) }
+            if let existing = conversions.first(where: { $0.sourceURL == url }) { select(existing) }
+            else { add(urls: [url]) }
+        } catch { toasts.failure("Couldn't open the sample", detail: error.localizedDescription) }
     }
 
     private var isGeneratingSample = false
@@ -1259,7 +1306,19 @@ final class AppModel {
     /// Moves the playhead. Scrubbing re-runs the model, because the frame
     /// genuinely changed.
     func scrub(to seconds: Double) {
-        playhead = max(0, seconds)
+        guard seconds.isFinite else { return }
+        let target = min(max(0, seconds), selection?.probe?.duration.seconds ?? max(0, seconds))
+        if playback.isShowingProof {
+            let start = playback.proofSourceStartSeconds
+            let duration = playback.duration
+            if duration.isFinite && duration > 0 && (target < start || target > start + duration) {
+                playback.showOriginal(at: target)
+                previewMode = .source
+            }
+        }
+        playhead = target
+        playback.seek(seconds: playhead)
+        scheduleAutosave()
         // With a plan in hand the dials follow the playhead across cuts, so
         // the inspector is always describing the shot you are looking at
         // rather than the one you started on.
@@ -1283,22 +1342,57 @@ final class AppModel {
     /// and deliberately does not tell the preview the frame changed.
     func updateTuning(_ tuning: EngineTuning, for conversion: Conversion) {
         guard !conversion.status.isConverting else { return }
-        conversion.tuning = tuning
+        let time = CMTime(seconds: playhead, preferredTimescale: 600)
+        let previous = conversion.effectiveTuning(at: time)
+        guard previous != tuning else { return }
+        registerTuningUndo(for: conversion)
+        if playback.activeProofURL != nil { workspace.proofStale = true }
+        let shotID = conversion.shotPlan?.shot(at: time)?.id
+        var adjustment = adjustmentScope == .video || shotID == nil
+            ? conversion.depthOverrides.global ?? .init()
+            : conversion.depthOverrides.shots[shotID!] ?? .init()
+        if adjustment.followsAutomatic == true { adjustment.automaticStrength = true; adjustment.automaticConvergence = true }
+        adjustment.followsAutomatic = nil
+        if previous.customDisparityPercent != tuning.customDisparityPercent || previous.strength != tuning.strength {
+            adjustment.strengthPercent = tuning.disparityScale * 100
+            adjustment.automaticStrength = nil
+        }
+        if previous.convergence != tuning.convergence { adjustment.convergence = tuning.convergence; adjustment.automaticConvergence = nil }
+        if adjustmentScope == .video || shotID == nil {
+            conversion.depthOverrides.global = adjustment.isEmpty ? nil : adjustment
+            // Whole video means every shot, including previously edited shots, for the changed parameter.
+            for id in conversion.depthOverrides.shots.keys {
+                if conversion.depthOverrides.shots[id]?.followsAutomatic == true {
+                    conversion.depthOverrides.shots[id]?.automaticStrength = true
+                    conversion.depthOverrides.shots[id]?.automaticConvergence = true
+                    conversion.depthOverrides.shots[id]?.followsAutomatic = nil
+                }
+                if previous.disparityScale != tuning.disparityScale {
+                    conversion.depthOverrides.shots[id]?.strengthPercent = nil
+                    conversion.depthOverrides.shots[id]?.automaticStrength = nil
+                }
+                if previous.convergence != tuning.convergence {
+                    conversion.depthOverrides.shots[id]?.convergence = nil
+                    conversion.depthOverrides.shots[id]?.automaticConvergence = nil
+                }
+            }
+        } else if let shotID { conversion.depthOverrides.shots[shotID] = adjustment }
+        var base = tuning
+        base.strength = conversion.tuning.strength
+        base.customDisparityPercent = conversion.tuning.customDisparityPercent
+        base.convergence = conversion.tuning.convergence
+        conversion.tuning = base
         if conversion.id == selectionID { refreshPreview(frameChanged: false) }
+        scheduleAutosave()
     }
 
     func refreshPreview(frameChanged: Bool) {
-        guard let selection, selection.probe != nil else {
-            preview.clear()
-            return
-        }
-        preview.update(
-            url: selection.sourceURL,
-            time: CMTime(seconds: playhead, preferredTimescale: 600),
-            mode: previewMode,
-            tuning: selection.tuning,
-            frameChanged: frameChanged
-        )
+        guard let selection else { playback.clear(); preview.clear(); return }
+        playback.updateSource(url: selection.sourceURL)
+        let time = CMTime(seconds: playhead, preferredTimescale: 600)
+        preview.update(url: selection.sourceURL, time: time, mode: previewMode,
+                       tuning: selection.effectiveTuning(at: time), frameChanged: frameChanged,
+                       automaticTuning: selection.automaticTuning(at: time))
     }
 
     /// The first run nudge, once there is something on screen to look at.
@@ -1327,13 +1421,14 @@ final class AppModel {
         preview.isWigglePlaying.toggle()
     }
 
-    private func probe(_ conversion: Conversion) {
+    func probe(_ conversion: Conversion) {
         Task { [weak self] in
             do {
                 let probe = try await Ingest.probe(url: conversion.sourceURL)
                 let thumbnailTime = CMTime(seconds: probe.duration.seconds * 0.25, preferredTimescale: 600)
                 conversion.probe = probe
-                conversion.status = .ready
+                conversion.sourceMissing = false
+                if !conversion.status.isDone { conversion.status = .ready }
                 conversion.failureKind = nil
 
                 if conversion.id == self?.selectionID {
@@ -1347,8 +1442,13 @@ final class AppModel {
                     conversion.thumbnail = image.value
                 }
                 self?.scheduleQueueDriverIfNeeded()
+                self?.scheduleAnalysis()
+                self?.scheduleAutosave()
             } catch {
-                conversion.status = .failed(error.localizedDescription)
+                conversion.planningProgress = nil
+                self?.analysisWaiting.removeAll { $0 == conversion.id }
+                conversion.sourceMissing = !FileManager.default.isReadableFile(atPath: conversion.sourceURL.path)
+                if !conversion.status.isDone { conversion.status = .failed(error.localizedDescription) }
                 conversion.failureKind = .intake
                 self?.recordFailureInCurrentRun(conversion.id)
                 self?.scheduleQueueDriverIfNeeded()
@@ -1359,7 +1459,7 @@ final class AppModel {
     // MARK: Output naming
 
     func outputURL(for conversion: Conversion) -> URL {
-        let name = filenamePattern.replacingOccurrences(of: "{name}", with: conversion.displayName)
+        let name = Self.safeOutputName(pattern: filenamePattern, sourceName: conversion.displayName)
         var candidate = outputFolder.appendingPathComponent(name).appendingPathExtension("mov")
         var suffix = 2
         while FileManager.default.fileExists(atPath: candidate.path) {
@@ -1425,6 +1525,7 @@ final class AppModel {
         guard !ordered.isEmpty else { return }
 
         var needsProbe: [Conversion] = []
+        var needsAnalysis: [Conversion] = []
         for conversion in ordered {
             conversion.report = nil
             conversion.startedAt = nil
@@ -1435,8 +1536,10 @@ final class AppModel {
                 needsProbe.append(conversion)
             } else {
                 conversion.status = .ready
+                if kind == .analysis { needsAnalysis.append(conversion) }
             }
         }
+        for conversion in needsAnalysis { autoTune(conversion, announce: false) }
 
         if queuePhase == .idle {
             startQueue(ordered, scope: .retryGroup)
@@ -1467,7 +1570,7 @@ final class AppModel {
         return formatter.string(fromByteCount: bytes)
     }
 
-    private func estimatedOutputBytes(for probe: SourceProbe) -> Int64 {
+    func estimatedOutputBytes(for probe: SourceProbe) -> Int64 {
         let bitsPerPixel = 0.15
         let bitsPerSecond = Double(probe.width * probe.height) * probe.nominalFrameRate * bitsPerPixel
         return Int64(bitsPerSecond / 8 * probe.duration.seconds)
@@ -1478,7 +1581,7 @@ final class AppModel {
         return overflow ? Int64.max : sum
     }
 
-    private func freeBytesAtOutput() -> Int64? {
+    func freeBytesAtOutput() -> Int64? {
         try? outputFolder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
             .volumeAvailableCapacityForImportantUsage
     }
@@ -1517,8 +1620,8 @@ final class AppModel {
         alert.alertStyle = .warning
         alert.messageText = "This would take about \(Self.humanDuration(seconds))."
         alert.informativeText = """
-            Steady depth reads a run of frames at a time, which holds depth \
-            perfectly still but runs far slower than Normal. On \
+            Steady depth reads a run of frames at a time, which can reduce depth drift \
+            but runs far slower than Normal. On \
             \(probe.displayDuration) of video that is not practical yet.
 
             Normal converts the same clip in about \
@@ -1575,17 +1678,21 @@ final class AppModel {
 
         if systemFeedbackEnabled { SystemNotifier.prepare() }
 
-        let request = ConversionRequest(
+        var request = ConversionRequest(
             probe: probe,
             tuning: conversion.tuning,
             outputURL: outputURL(for: conversion),
             shotPlan: conversion.shotPlan
         )
+        request.depthOverrides = conversion.depthOverrides
+        let frozenOverrides = conversion.depthOverrides
+        let frozenPlan = conversion.shotPlan
         let frozenTuning = conversion.tuning
         conversion.startedAt = Date()
         conversion.status = .converting(fraction: 0, framesDone: 0)
         conversion.report = nil
         conversion.failureKind = nil
+        scheduleAutosave()
         if priorityNoticeIDs.contains(conversion.id) { dismissPriorityNotice() }
 
         let attemptID = UUID()
@@ -1637,14 +1744,30 @@ final class AppModel {
                     DockProgress.shared.fraction = nil
                     break
                 }
+                let elapsed = conversion.startedAt.map { Date().timeIntervalSince($0) } ?? 0
+                recordExport(report, conversion: conversion, tuning: frozenTuning, overrides: frozenOverrides, seconds: elapsed, proof: false)
+                guard report.passed else {
+                    conversion.report = report
+                    conversion.status = .failed("Export finished, but verification failed. Inspect the report before using this file.")
+                    conversion.failureKind = .conversion
+                    conversion.startedAt = nil
+                    DockProgress.shared.fraction = nil
+                    recordFailureInCurrentRun(conversion.id)
+                    toasts.failure("Export needs attention", detail: "\(conversion.displayName) failed verification. The report and file are available in History.")
+                    scheduleAutosave()
+                    break
+                }
                 conversion.report = report
                 conversion.exportedTuning = frozenTuning
+                conversion.exportedDepthOverrides = frozenOverrides
+                conversion.exportedShotPlan = frozenPlan
                 conversion.status = .done(outputURL: report.outputURL)
                 conversion.startedAt = nil
                 DockProgress.shared.fraction = nil
                 recordCompletionInCurrentRun(conversion.id)
                 print(report.text)
                 writeReport(report, for: conversion)
+                scheduleAutosave()
 
                 let url = report.outputURL
                 toasts.success(
@@ -1675,6 +1798,7 @@ final class AppModel {
                 DockProgress.shared.fraction = nil
                 if cancellationRequested { break }
                 recordFailureInCurrentRun(conversion.id)
+                recordFailedAttempt(conversion, message: message)
                 toasts.failure("Couldn't convert \(conversion.displayName)", detail: message)
                 if systemFeedbackEnabled {
                     SystemNotifier.post(
@@ -1717,6 +1841,8 @@ final class AppModel {
             activeAttemptID = nil
             activeCancellation = nil
         }
+        scheduleAutosave()
+        scheduleAnalysis()
     }
 
     func cancelConversion() {
@@ -1770,7 +1896,7 @@ final class AppModel {
 
         let videos = contents.filter { url in
             guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
-            return type.conforms(to: .video) || type.conforms(to: .video)
+            return type.conforms(to: .video) || type.conforms(to: .movie)
         }.sorted { $0.lastPathComponent < $1.lastPathComponent }
 
         guard !videos.isEmpty else {
@@ -1780,7 +1906,7 @@ final class AppModel {
 
         writesGoldenSetReports = true
         add(urls: videos)
-        convertAllReady()
+        startQueue(conversions.filter { videos.contains($0.sourceURL) && !$0.status.isConverting }, scope: .retryGroup)
     }
 
     func revealGoldenSetFolder() {

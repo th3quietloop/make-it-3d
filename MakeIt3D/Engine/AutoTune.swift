@@ -27,7 +27,7 @@ enum AutoTune {
     /// most of the picture behind the glass is what makes a long film watchable.
     static let forwardShare = 0.30
 
-    struct Result: Equatable, Sendable {
+    struct Result: Equatable, Sendable, Codable {
         let strength: Double
         let convergence: Double
         /// What the resulting comfort load should be, for the report.
@@ -39,11 +39,11 @@ enum AutoTune {
         var explanation: String {
             switch confidence {
             case ..<0.2:
-                return "Not much real depth in this shot, so the settings stay gentle. Pushing a flat scene harder only makes it wobble."
+                return "Low estimated depth range. Gentle settings reduce exaggerated differences in uncertain areas."
             case ..<0.6:
-                return "Moderate depth. Settings sit in the middle."
+                return "Moderate estimated depth range. Inspect a moving proof for drift and edges."
             default:
-                return "Plenty of real depth here, so this shot can take a strong setting."
+                return "Wide estimated depth range. Inspect foreground edges before increasing the amount."
             }
         }
     }

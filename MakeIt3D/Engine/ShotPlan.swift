@@ -19,6 +19,11 @@ struct Shot: Equatable, Sendable, Identifiable {
     /// The settings solved for this shot.
     let settings: AutoTune.Result
 
+    var motionRisk: Double = 0
+    var edgeRisk: Double = 0
+    var representativeSeconds: [Double] = []
+    var inspectionRisk: Double { max(motionRisk, edgeRisk) }
+
     var duration: CMTime { end - start }
 
     /// A time inside this shot worth showing as its representative frame.
@@ -26,7 +31,7 @@ struct Shot: Equatable, Sendable, Identifiable {
 }
 
 /// The whole plan for one file.
-struct ShotPlan: Equatable, Sendable {
+struct ShotPlan: Equatable, Sendable, Codable {
     let shots: [Shot]
     /// How many frames were read to build it.
     let samplesTaken: Int
@@ -46,7 +51,7 @@ struct ShotPlan: Equatable, Sendable {
         if shots.count == 1 { return "One continuous shot." }
         let flat = shots.filter { $0.settings.confidence < 0.12 }.count
         if flat == 0 { return "\(shots.count) shots, each tuned on its own." }
-        return "\(shots.count) shots, each tuned on its own. \(flat) with little real depth."
+        return "\(shots.count) shots, each tuned on its own. \(flat) with low estimated depth range."
     }
 
     /// The line that replaced the depth gauge.
@@ -56,26 +61,12 @@ struct ShotPlan: Equatable, Sendable {
     /// sentence, and unlike the gauge it speaks about the whole film rather
     /// than whichever frame the playhead happens to be parked on.
     var comfortNote: String {
-        guard !shots.isEmpty else { return "Nothing to measure." }
-
-        let flat = shots.filter { $0.settings.confidence < 0.12 }
-        let strong = shots.filter { $0.settings.predictedLoad > 1.0 }
-
-        if !strong.isEmpty {
-            return strong.count == shots.count
-                ? "Strong throughout. Fine for a short clip, tiring for a film."
-                : "\(strong.count) of \(shots.count) shots run strong. Comfortable for a clip, less so for a film."
-        }
-        if flat.isEmpty {
-            return shots.count == 1
-                ? "Comfortable to sit with."
-                : "Comfortable to sit with, all the way through."
-        }
-        if flat.count == shots.count {
-            return "There is barely any real depth in this footage. It will convert, but it will stay subtle."
-        }
-        return "Comfortable throughout. \(flat.count) of \(shots.count) shots have little real depth, so those stay subtle."
+        guard !shots.isEmpty else { return "No depth estimate yet." }
+        let subtle = shots.filter { $0.settings.confidence < 0.12 }.count
+        if subtle == shots.count { return "Low estimated depth range. Start subtle and inspect a moving proof." }
+        return "Automatic depth applied. Inspect motion and edges before exporting; headset comfort is a personal viewing check."
     }
+
 }
 
 /// Builds a ShotPlan by sampling a file.
@@ -136,17 +127,20 @@ enum ShotPlanner {
         _ = track
 
         let stabilizer = Stabilizer(tuning: tuning)
+        let motionEstimator = FrameMotionEstimator()
         var samples: [Sample] = []
 
         for index in 0..<total {
-            if Task.isCancelled { break }
+            try Task.checkCancellation()
             let time = CMTime(seconds: Double(index) * sampleInterval, preferredTimescale: 600)
             guard let image = try? await generator.image(at: time).image else { continue }
             guard let buffer = pixelBuffer(from: image) else { continue }
             let luma = lumaHistogram(from: buffer)
+            let motion = motionEstimator.analyze(buffer)
             guard let nearness = try? estimator.nearness(from: buffer) else { continue }
             _ = stabilizer.normalize(nearness)
-            samples.append(Sample(time: time, content: stabilizer.lastContent, luma: luma))
+            let movement = min(1, Double(abs(motion.translation.x) + abs(motion.translation.y)) * 8 + Double(motion.difference) * 3)
+            samples.append(Sample(time: time, content: stabilizer.lastContent, luma: luma, motionRisk: motion.sceneCut ? 0 : movement, edgeRisk: edgeRisk(nearness)))
             progress(Double(index + 1) / Double(total))
         }
 
@@ -161,13 +155,17 @@ enum ShotPlanner {
             let content = DepthContent.averaging(slice.map(\.content))
             let start = slice.first?.time ?? .zero
             let end = range.upperBound < samples.count ? samples[range.upperBound].time : duration
+            let riskiest = slice.max { max($0.motionRisk, $0.edgeRisk) < max($1.motionRisk, $1.edgeRisk) }
             shots.append(
                 Shot(
                     id: index,
                     start: start,
                     end: end,
                     content: content,
-                    settings: AutoTune.settings(for: content)
+                    settings: AutoTune.settings(for: content),
+                    motionRisk: slice.map(\.motionRisk).max() ?? 0,
+                    edgeRisk: slice.map(\.edgeRisk).max() ?? 0,
+                    representativeSeconds: Array(Set([start.seconds, (start.seconds + end.seconds) / 2, max(start.seconds, end.seconds - 0.1), riskiest?.time.seconds ?? start.seconds])).sorted()
                 )
             )
         }
@@ -185,6 +183,25 @@ enum ShotPlanner {
         let time: CMTime
         let content: DepthContent
         let luma: [Float]
+        let motionRisk: Double
+        let edgeRisk: Double
+    }
+
+    /// Measured spatial discontinuity in the depth estimate, independent of confidence.
+    private static func edgeRisk(_ map: NearnessMap) -> Double {
+        guard map.width > 1, map.height > 1,
+              let low = map.values.min(), let high = map.values.max(), high > low else { return 0 }
+        let span = high - low
+        var steep = 0, count = 0
+        for y in stride(from: 0, to: map.height - 1, by: 2) {
+            for x in stride(from: 0, to: map.width - 1, by: 2) {
+                let i = y * map.width + x
+                let delta = max(abs(map.values[i] - map.values[i + 1]), abs(map.values[i] - map.values[i + map.width])) / span
+                if delta > 0.08 { steep += 1 }
+                count += 1
+            }
+        }
+        return min(1, Double(steep) / Double(max(1, count)) * 12)
     }
 
     /// Splits the samples into runs wherever the picture changes wholesale.

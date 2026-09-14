@@ -20,6 +20,14 @@ echo "==> Building Release"
 xcodebuild -project MakeIt3D.xcodeproj -scheme MakeIt3D -configuration Release \
   -derivedDataPath .build clean build | tail -3
 
+echo "==> Running native media release gates"
+"$APP/Contents/MacOS/MakeIt3D" --selftest
+
+echo "==> Running regression tests"
+xcodebuild -project MakeIt3D.xcodeproj -scheme MakeIt3D -configuration Debug \
+  -destination 'platform=macOS,arch=arm64' -derivedDataPath .build-tests \
+  CODE_SIGNING_ALLOWED=NO test | tail -12
+
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")
 ZIP="MakeIt3D-${VERSION}.zip"
 

@@ -6,29 +6,51 @@ import UniformTypeIdentifiers
 struct RootView: View {
     @Bindable var model: AppModel
     @State private var isTargeted = false
+    @State private var showingActivity = false
+    @State private var focusViewing = false
+    @State private var previousSidebar = true
+    @State private var previousInspector = true
+    @State private var automaticSidebar = true
 
     var body: some View {
-        Group {
-            if model.conversions.isEmpty {
-                EmptyStateView(
-                    isTargeted: isTargeted,
-                    onBrowse: openPanel,
-                    onSample: { model.startGuidedTour() },
-                    isFirstRun: !model.onboarding.isComplete
-                )
-            } else {
-                panes
+        VStack(spacing: 0) {
+            workspaceNotice
+            Group {
+                if model.conversions.isEmpty {
+                    EmptyStateView(
+                        isTargeted: isTargeted,
+                        onBrowse: openPanel,
+                        onSample: { model.startGuidedTour() },
+                        isFirstRun: !model.onboarding.isComplete
+                    )
+                } else {
+                    panes
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if model.toasts.currentMessage != nil {
+                Hairline()
+                ToastRail(center: model.toasts) { showingActivity = true }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WindowVibrancy())
-        .overlay(alignment: .bottomLeading) {
-            // Toasts sit over the stage, above the scrubber, so they never
-            // cover the picture being judged.
-            ToastStack(center: model.toasts)
-                .padding(Tokens.Space.m)
-                .padding(.bottom, Tokens.Layout.paneHeaderHeight)
-                .allowsHitTesting(!model.toasts.toasts.isEmpty)
+        .sheet(isPresented: $showingActivity) { ActivityHistoryView(center: model.toasts) }
+        .sheet(isPresented: $model.workspace.reviewPresented) {
+            if let selection = model.selection, let plan = selection.shotPlan {
+                ShotReviewSheet(sourceURL: selection.sourceURL, plan: plan) { seconds in
+                    model.scrub(to: seconds)
+                    model.workspace.reviewPresented = false
+                }
+            }
+        }
+        .onAppear {
+            if model.workspace.restoredNotice != nil { automaticSidebar = false }
+            else if automaticSidebar && model.conversions.count <= 1 { model.sidebarVisible = false }
+        }
+        .onChange(of: model.conversions.count) { oldCount, newCount in
+            guard automaticSidebar, !focusViewing else { return }
+            if newCount <= 1 { model.sidebarVisible = false }
+            else if oldCount <= 1 { model.sidebarVisible = true }
         }
         .dropDestination(for: URL.self) { urls, _ in
             model.add(urls: urls)
@@ -36,25 +58,45 @@ struct RootView: View {
         } isTargeted: { isTargeted = $0 }
         .toolbar { toolbarContent }
         .modifier(KeyboardMap(model: model))
+        .workspaceSheets(model: model)
+    }
+
+    @ViewBuilder private var workspaceNotice: some View {
+        if let error = model.workspace.saveError {
+            HStack(spacing: Tokens.Space.s) {
+                Image(systemName: "exclamationmark.triangle").foregroundStyle(Tokens.Palette.errorText)
+                Text(error).font(Tokens.Font.caption).textSelection(.enabled)
+                Spacer()
+                Button("Save session as…") { model.saveSessionAs() }
+            }
+            .padding(.horizontal, Tokens.Space.m).padding(.vertical, Tokens.Space.xs)
+            .background(Tokens.Palette.panelRaised)
+        } else if let notice = model.workspace.restoredNotice {
+            HStack(spacing: Tokens.Space.s) {
+                Image(systemName: "arrow.counterclockwise").foregroundStyle(Tokens.Palette.textSecondary)
+                Text(notice).font(Tokens.Font.caption)
+                Spacer()
+                Button { model.workspace.restoredNotice = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).accessibilityLabel("Dismiss workspace notice")
+            }
+            .padding(.horizontal, Tokens.Space.m).padding(.vertical, Tokens.Space.xs)
+            .background(Tokens.Palette.panel)
+        }
     }
 
     // MARK: Panes
 
     private var panes: some View {
-        HStack(spacing: 0) {
+        HSplitView {
             if model.sidebarVisible {
                 QueueSidebarView(model: model, isTargeted: isTargeted)
-                    .frame(width: Tokens.Layout.sidebarWidth)
+                    .frame(minWidth: Tokens.Layout.sidebarMinWidth,
+                           idealWidth: Tokens.Layout.sidebarWidth, maxWidth: 336)
                     .transition(.move(edge: .leading).combined(with: .opacity))
-                // The stage colour goes behind the rule. The hairline is white
-                // at 7%, and making the window transparent for the sidebar's
-                // vibrancy left nothing behind this one pixel column, so the
-                // other 93% was a window onto the desktop. A thin strip of
-                // wallpaper down each side of the picture.
-                Hairline(axis: .vertical).background(Tokens.Palette.stage)
             }
 
-            VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
                 if let banner = model.modelBanner {
                     bannerView(banner)
                 }
@@ -74,6 +116,7 @@ struct RootView: View {
                 InspectorView(model: model, conversion: selection)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
+        }
         }
         // Springs, not fixed durations: grabbing the toggle twice in a row now
         // animates from wherever the pane currently is instead of snapping to
@@ -103,9 +146,11 @@ struct RootView: View {
         // file. Proximity to what a control affects is the whole point.
         ToolbarItem(placement: .navigation) {
             Button {
+                automaticSidebar = false
                 model.sidebarVisible.toggle()
+                focusViewing = false
             } label: {
-                Label("Queue", systemImage: "sidebar.leading")
+                Label("Queue (\(model.conversions.count))", systemImage: "sidebar.leading")
             }
             .help("Show or hide the queue")
         }
@@ -124,13 +169,47 @@ struct RootView: View {
         }
 
         ToolbarItem(placement: .primaryAction) {
+            Button { toggleViewingLayout() } label: {
+                Label(focusViewing ? "Restore panels" : "Focus on video",
+                      systemImage: focusViewing ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+            }
+            .help(focusViewing ? "Restore the previous panel layout" : "Enlarge the video and hide both panels")
+            .disabled(model.selection == nil)
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Menu {
+                Button("Export history…") { model.workspace.historyPresented = true }
+                Button("Messages…") { showingActivity = true }
+            } label: {
+                Label("History", systemImage: model.toasts.pendingFailureCount > 0 ? "exclamationmark.bubble" : "clock.arrow.circlepath")
+            } primaryAction: {
+                model.workspace.historyPresented = true
+            }
+            .help("Open export history. The menu also contains messages and issues.")
+        }
+
+        ToolbarItem(placement: .primaryAction) {
             Button {
                 model.inspectorVisible.toggle()
+                focusViewing = false
             } label: {
-                Label("Inspector", systemImage: "sidebar.trailing")
+                Label("Adjust depth", systemImage: "slider.horizontal.3")
             }
-            .help("Show or hide the settings")
+            .help("Show or hide Adjust depth")
         }
+    }
+
+    private func toggleViewingLayout() {
+        if focusViewing {
+            model.sidebarVisible = previousSidebar
+            model.inspectorVisible = previousInspector
+        } else {
+            previousSidebar = model.sidebarVisible
+            previousInspector = model.inspectorVisible
+            model.sidebarVisible = false
+            model.inspectorVisible = false
+        }
+        focusViewing.toggle()
     }
 
     // MARK: Import
@@ -157,8 +236,11 @@ private struct KeyboardMap: ViewModifier {
                     Button("") { model.previewMode = mode }
                         .keyboardShortcut(KeyEquivalent(mode.shortcut), modifiers: [])
                 }
-                Button("") { model.toggleWiggle() }
-                    .keyboardShortcut(.space, modifiers: [])
+                Button("") {
+                    if model.previewMode == .source || model.playback.isShowingProof { model.playback.togglePlayback() }
+                    else { model.toggleWiggle() }
+                }
+                .keyboardShortcut(.space, modifiers: [])
             }
             .opacity(0)
             .frame(width: 0, height: 0)

@@ -4,7 +4,7 @@ import CoreVideo
 import CoreGraphics
 import Foundation
 
-/// What the stage is showing.
+/// Existing raw values remain stable for saved sessions and keyboard commands.
 enum PreviewMode: Int, CaseIterable, Identifiable, Sendable {
     case source = 1
     case depth = 2
@@ -12,193 +12,174 @@ enum PreviewMode: Int, CaseIterable, Identifiable, Sendable {
     case wiggle = 4
 
     var id: Int { rawValue }
-
     var label: String {
         switch self {
-        case .source: return "Source"
-        case .depth: return "Depth"
-        // Named for what you see, not for the technique. "Wiggle" is the
-        // most useful mode in the app and told a first time user nothing.
-        case .stereo: return "3D"
-        case .wiggle: return "Compare eyes"
+        case .source: "Original"
+        case .depth: "Depth map"
+        case .stereo: "Red-cyan glasses"
+        case .wiggle: "Compare eyes"
         }
     }
-
-    var shortcut: Character {
-        Character("\(rawValue)")
-    }
+    var shortcut: Character { Character("\(rawValue)") }
 }
 
-/// A rendered preview, ready for the stage.
 struct PreviewImage: @unchecked Sendable {
-    /// What Wiggle alternates between. For every other mode, `right` is nil.
     let left: CGImage
     let right: CGImage?
-
     var isPair: Bool { right != nil }
 }
 
-/// Renders the stage.
-///
-/// The point of this type is the cache. Running the depth model on a frame
-/// costs tens of milliseconds; changing the strength preset should cost almost
-/// nothing. So the model output for the visible frame is held, and a parameter
-/// change re-runs only the disparity mapping and the warp. The model never runs
-/// again until the playhead or the file moves.
-actor PreviewEngine {
+/// Image, time, and measurement cross the actor boundary together. A subsequent
+/// seek cannot attach its measurement to an earlier image.
+struct PreviewRender: @unchecked Sendable {
+    let image: PreviewImage
+    let actualSeconds: Double
+    let isPrecise: Bool
+    let frameWidth: Int
+    let content: DepthContent
+    let disparity: (near: Float, far: Float)?
+}
 
-    private struct FrameKey: Equatable {
+actor PreviewEngine {
+    struct FrameKey: Equatable, Sendable {
         let url: URL
         let timeValue: Double
         let precise: Bool
+        let maximumHeight: Int
     }
 
     private var estimator: CoreMLDepthEstimator?
-    private var stabilizer: Stabilizer?
     private var renderer: WarpRenderer?
     private var rendererSize: (width: Int, height: Int)?
-
+    private var rendererMeshSpacing: Int?
     private var cachedKey: FrameKey?
     private var cachedFrame: CVPixelBuffer?
-    private var cachedNearness: NearnessMap?
-
+    private var cachedRawNearness: NearnessMap?
+    private var actualSeconds: Double = 0
     private var cachedGenerator: AVAssetImageGenerator?
     private var cachedGeneratorURL: URL?
-
+    private var requestGeneration: UInt64 = 0
     private var scratchLeft: CVPixelBuffer?
     private var scratchRight: CVPixelBuffer?
     private var scratchComposite: CVPixelBuffer?
-
     private let context = CIContext(options: [.useSoftwareRenderer: false])
-
-    /// Set when the model could not be loaded, so the UI can say so once
-    /// instead of failing on every scrub.
     private(set) var modelFailure: String?
 
-    // MARK: Frame preparation
-
-    /// Decodes the frame at `time`, runs the depth model on it, and caches
-    /// both. Cheap to call repeatedly with the same arguments.
-    func prepare(
+    /// Original decoding requires neither a depth model nor a Metal renderer.
+    /// Depth and rendering are lazy, so the first useful picture arrives before
+    /// neural warmup and the original remains available if depth is unavailable.
+    func makePreview(
         url: URL,
         time: CMTime,
+        mode: PreviewMode,
         tuning: EngineTuning,
-        precise: Bool = true
-    ) async throws {
-        let key = FrameKey(url: url, timeValue: time.seconds, precise: precise)
-        if key == cachedKey, cachedNearness != nil { return }
-        // A precise request is already satisfied by a precise render of the
-        // same frame, but never by the fast one.
-        if !precise,
-           let cachedKey,
-           cachedKey.url == url, cachedKey.timeValue == time.seconds,
-           cachedNearness != nil {
-            return
+        precise: Bool = true,
+        fullResolution: Bool = false,
+        reconstructionRisk: Bool = false
+    ) async throws -> PreviewRender {
+        requestGeneration &+= 1
+        let generation = requestGeneration
+        let key = FrameKey(
+            url: url, timeValue: time.seconds, precise: precise,
+            maximumHeight: fullResolution ? 0 : tuning.previewMaxHeight
+        )
+        if !Self.canReuse(cachedKey, for: key) {
+            let decoded = try await decode(url: url, time: time, maximumHeight: key.maximumHeight, precise: precise)
+            try Task.checkCancellation()
+            guard generation == requestGeneration else { throw CancellationError() }
+            cachedFrame = decoded.frame
+            actualSeconds = decoded.seconds
+            cachedRawNearness = nil
+            cachedKey = key
+            // A still inspection is not a contiguous playback sequence. Never
+            // rebuild its holes with whichever unrelated image was visited last.
+            renderer?.resetBackgroundPlate()
         }
-
-        let frame = try await decode(url: url, time: time, tuning: tuning, precise: precise)
-
+        try Task.checkCancellation()
+        guard generation == requestGeneration, let frame = cachedFrame else { throw CancellationError() }
         let width = CVPixelBufferGetWidth(frame)
         let height = CVPixelBufferGetHeight(frame)
+
+        if mode == .source && !reconstructionRisk {
+            return PreviewRender(
+                image: PreviewImage(left: try image(from: frame), right: nil),
+                actualSeconds: actualSeconds, isPrecise: cachedKey?.precise ?? precise,
+                frameWidth: width, content: .unknown, disparity: nil
+            )
+        }
+
+        if cachedRawNearness == nil {
+            cachedRawNearness = try loadEstimator().nearness(from: frame)
+        }
+        guard let raw = cachedRawNearness else { throw PreviewError.noFrame }
+        // Normalization is cheap and uses the current configuration; the model
+        // cache survives strength, balance, and crop changes.
+        let normalizer = Stabilizer(tuning: tuning)
+        let nearness = normalizer.normalize(raw)
+        let field = Disparity.field(from: nearness, frameWidth: width, tuning: tuning)
         try prepareRenderer(width: width, height: height, tuning: tuning)
-
-        let estimator = try loadEstimator()
-
-        // The preview skips the temporal smoothing, so a scrub is a fair look
-        // at this frame rather than a blend with wherever the playhead happened
-        // to be before. It does not skip normalization: without it the model's
-        // raw inverse depth sits on an arbitrary scale and the whole frame
-        // lands on one side of the screen plane.
-        let stabilizer = self.stabilizer ?? Stabilizer(tuning: tuning)
-        self.stabilizer = stabilizer
-        let nearness = stabilizer.normalize(try estimator.nearness(from: frame))
-
-        cachedKey = key
-        cachedFrame = frame
-        cachedNearness = nearness
+        guard let renderer else { throw PreviewError.renderFailed }
+        let preview: PreviewImage
+        if reconstructionRisk {
+            let destination = try scratch(.composite, width: width, height: height)
+            try renderer.renderReconstructionMask(disparity: field, source: frame, into: destination)
+            preview = PreviewImage(left: try image(from: destination), right: nil)
+        } else {
+            switch mode {
+            case .source:
+                preview = PreviewImage(left: try image(from: frame), right: nil)
+            case .depth:
+                let destination = try scratch(.composite, width: width, height: height)
+                try renderer.renderDepthRamp(disparity: field, source: frame, into: destination)
+                preview = PreviewImage(left: try image(from: destination), right: nil)
+            case .stereo, .wiggle:
+                let left = try scratch(.left, width: width, height: height)
+                let right = try scratch(.right, width: width, height: height)
+                // Repeated parameter/A-B renders of this exact frame must be
+                // deterministic too; neither alternative seeds the other.
+                renderer.resetBackgroundPlate()
+                try renderer.synthesize(source: frame, disparity: field, into: left, and: right)
+                if mode == .wiggle {
+                    preview = PreviewImage(left: try image(from: left), right: try image(from: right))
+                } else {
+                    let destination = try scratch(.composite, width: width, height: height)
+                    try renderer.composeAnaglyph(left: left, right: right, into: destination)
+                    preview = PreviewImage(left: try image(from: destination), right: nil)
+                }
+            }
+        }
+        return PreviewRender(
+            image: preview, actualSeconds: actualSeconds, isPrecise: cachedKey?.precise ?? precise,
+            frameWidth: width, content: normalizer.lastContent,
+            disparity: (field.maxPositive, field.maxNegative)
+        )
     }
 
-    /// Drops the cache. Called when the model or the file changes underneath.
+    /// A precise result can satisfy an approximate request at the same time;
+    /// approximate decoding never satisfies a precise or native-size request.
+    nonisolated static func canReuse(_ cached: FrameKey?, for requested: FrameKey) -> Bool {
+        guard let cached else { return false }
+        return cached.url == requested.url && cached.timeValue == requested.timeValue
+            && cached.maximumHeight == requested.maximumHeight
+            && (cached.precise || !requested.precise)
+    }
+
     func invalidate() {
+        requestGeneration &+= 1
+        cachedGenerator?.cancelAllCGImageGeneration()
         cachedKey = nil
         cachedFrame = nil
-        cachedNearness = nil
+        cachedRawNearness = nil
         cachedGenerator = nil
         cachedGeneratorURL = nil
+        renderer?.resetBackgroundPlate()
+        renderer = nil
+        rendererSize = nil
+        rendererMeshSpacing = nil
+        scratchLeft = nil
+        scratchRight = nil
+        scratchComposite = nil
     }
-
-    // MARK: Rendering
-
-    /// Renders the cached frame in the requested mode. Runs no model work, so
-    /// this is what a slider drag calls.
-    func render(mode: PreviewMode, tuning: EngineTuning) throws -> PreviewImage {
-        guard let frame = cachedFrame, let nearness = cachedNearness, let renderer else {
-            throw PreviewError.noFrame
-        }
-
-        let width = CVPixelBufferGetWidth(frame)
-        let height = CVPixelBufferGetHeight(frame)
-
-        switch mode {
-        case .source:
-            return PreviewImage(left: try image(from: frame), right: nil)
-
-        case .depth:
-            let field = Disparity.field(from: nearness, frameWidth: width, tuning: tuning)
-            let destination = try scratch(.composite, width: width, height: height)
-            try renderer.renderDepthRamp(disparity: field, source: frame, into: destination)
-            return PreviewImage(left: try image(from: destination), right: nil)
-
-        case .stereo:
-            let (left, right) = try synthesize(frame: frame, nearness: nearness, tuning: tuning)
-            let destination = try scratch(.composite, width: width, height: height)
-            try renderer.composeAnaglyph(left: left, right: right, into: destination)
-            return PreviewImage(left: try image(from: destination), right: nil)
-
-        case .wiggle:
-            let (left, right) = try synthesize(frame: frame, nearness: nearness, tuning: tuning)
-            return PreviewImage(left: try image(from: left), right: try image(from: right))
-        }
-    }
-
-    private func synthesize(
-        frame: CVPixelBuffer,
-        nearness: NearnessMap,
-        tuning: EngineTuning
-    ) throws -> (CVPixelBuffer, CVPixelBuffer) {
-        guard let renderer else { throw PreviewError.noFrame }
-        let width = CVPixelBufferGetWidth(frame)
-        let height = CVPixelBufferGetHeight(frame)
-
-        let field = Disparity.field(from: nearness, frameWidth: width, tuning: tuning)
-        let left = try scratch(.left, width: width, height: height)
-        let right = try scratch(.right, width: width, height: height)
-        try renderer.synthesize(source: frame, disparity: field, into: left, and: right)
-        return (left, right)
-    }
-
-    /// Width of the frame the preview is currently working at, which the depth
-    /// verdict needs in order to express disparity as a fraction of the picture
-    /// rather than a raw pixel count.
-    var frameWidth: Int? {
-        guard let cachedFrame else { return nil }
-        return CVPixelBufferGetWidth(cachedFrame)
-    }
-
-    /// The disparity range of the visible frame, for the inspector readout.
-    func disparityRange(tuning: EngineTuning) -> (near: Float, far: Float)? {
-        guard let nearness = cachedNearness, let frame = cachedFrame else { return nil }
-        let field = Disparity.field(
-            from: nearness, frameWidth: CVPixelBufferGetWidth(frame), tuning: tuning
-        )
-        return (field.maxPositive, field.maxNegative)
-    }
-
-    /// What the model saw in the visible frame, before normalization. The
-    /// disparity range above describes the settings; this describes the shot.
-    var depthContent: DepthContent { stabilizer?.lastContent ?? .unknown }
-
-    // MARK: Plumbing
 
     private func loadEstimator() throws -> CoreMLDepthEstimator {
         if let estimator { return estimator }
@@ -214,20 +195,19 @@ actor PreviewEngine {
     }
 
     private func prepareRenderer(width: Int, height: Int, tuning: EngineTuning) throws {
-        if let rendererSize, rendererSize == (width, height), renderer != nil { return }
+        if let renderer, let rendererSize, rendererSize == (width, height), rendererMeshSpacing == tuning.meshVertexSpacing {
+            renderer.updateTuning(tuning)
+            return
+        }
         renderer = try WarpRenderer(frameWidth: width, frameHeight: height, tuning: tuning)
         rendererSize = (width, height)
+        rendererMeshSpacing = tuning.meshVertexSpacing
         scratchLeft = nil
         scratchRight = nil
         scratchComposite = nil
     }
 
-    private enum Scratch {
-        case left, right, composite
-    }
-
-    /// Reuses one buffer per slot across renders, so dragging a slider does not
-    /// allocate a frame sized buffer on every tick.
+    private enum Scratch { case left, right, composite }
     private func scratch(_ slot: Scratch, width: Int, height: Int) throws -> CVPixelBuffer {
         let existing: CVPixelBuffer?
         switch slot {
@@ -235,13 +215,9 @@ actor PreviewEngine {
         case .right: existing = scratchRight
         case .composite: existing = scratchComposite
         }
-
-        if let existing,
-           CVPixelBufferGetWidth(existing) == width,
-           CVPixelBufferGetHeight(existing) == height {
+        if let existing, CVPixelBufferGetWidth(existing) == width, CVPixelBufferGetHeight(existing) == height {
             return existing
         }
-
         let buffer = try WarpRenderer.makePixelBuffer(width: width, height: height)
         switch slot {
         case .left: scratchLeft = buffer
@@ -251,13 +227,9 @@ actor PreviewEngine {
         return buffer
     }
 
-    /// The generator, kept alive per file.
-    ///
-    /// Building a fresh AVURLAsset and generator on every scrub tick meant
-    /// re-opening and re-parsing the video for each frame, which is most of why
-    /// scrubbing a long file felt underwater.
     private func generator(for url: URL) -> AVAssetImageGenerator {
         if let cachedGenerator, cachedGeneratorURL == url { return cachedGenerator }
+        cachedGenerator?.cancelAllCGImageGeneration()
         let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
         generator.appliesPreferredTrackTransform = true
         cachedGenerator = generator
@@ -265,95 +237,65 @@ actor PreviewEngine {
         return generator
     }
 
-    /// Pulls one frame at `time`, scaled down if the source is taller than the
-    /// preview budget. Export always runs at full resolution; the preview trades
-    /// pixels for the responsiveness the judgment loop needs.
-    ///
-    /// `precise` is the difference between a scrub in flight and a scrub that
-    /// has landed. A zero tolerance seek has to decode forward from the previous
-    /// keyframe, which on long GOP H.264 is hundreds of milliseconds. While the
-    /// playhead is moving, the nearest sync sample is the right answer, because
-    /// the user is hunting for a moment, not inspecting one. The exact frame
-    /// arrives a beat after they stop.
     private func decode(
-        url: URL,
-        time: CMTime,
-        tuning: EngineTuning,
-        precise: Bool
-    ) async throws -> CVPixelBuffer {
+        url: URL, time: CMTime, maximumHeight: Int, precise: Bool
+    ) async throws -> (frame: CVPixelBuffer, seconds: Double) {
         let generator = generator(for: url)
+        generator.cancelAllCGImageGeneration()
         let tolerance = precise ? CMTime.zero : CMTime(value: 1, timescale: 2)
         generator.requestedTimeToleranceBefore = tolerance
         generator.requestedTimeToleranceAfter = tolerance
-
-        // The completion handler form, not the async property. Awaiting
-        // `generator.image(at:)` from inside the actor would send the generator
-        // across an isolation boundary, and it is deliberately actor confined.
-        let cgImage = try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<Transfer<CGImage>, Error>) in
-            generator.generateCGImageAsynchronously(for: time) { image, _, error in
+        generator.maximumSize = maximumHeight > 0
+            ? CGSize(width: 16384, height: maximumHeight) : .zero
+        let decoded = try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Transfer<(CGImage, CMTime)>, Error>) in
+            generator.generateCGImageAsynchronously(for: time) { image, actual, error in
                 if let image {
-                    continuation.resume(returning: Transfer(image))
+                    continuation.resume(returning: Transfer((image, actual)))
                 } else {
                     continuation.resume(throwing: error ?? PreviewError.decodeFailed)
                 }
             }
         }.value
-
+        try Task.checkCancellation()
+        let cgImage = decoded.0
         var width = cgImage.width
         var height = cgImage.height
-        if height > tuning.previewMaxHeight {
-            let scale = Double(tuning.previewMaxHeight) / Double(height)
-            width = Int((Double(width) * scale).rounded())
-            height = tuning.previewMaxHeight
+        if maximumHeight > 0, height > maximumHeight {
+            width = Int((Double(width) * Double(maximumHeight) / Double(height)).rounded())
+            height = maximumHeight
         }
-        // The warp mesh and the model both want even dimensions.
-        width -= width % 2
-        height -= height % 2
-
+        width = max(2, width - width % 2)
+        height = max(2, height - height % 2)
         let buffer = try WarpRenderer.makePixelBuffer(width: width, height: height)
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-
         guard let base = CVPixelBufferGetBaseAddress(buffer),
               let context = CGContext(
-                data: base,
-                width: width,
-                height: height,
-                bitsPerComponent: 8,
+                data: base, width: width, height: height, bitsPerComponent: 8,
                 bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
-                    | CGBitmapInfo.byteOrder32Little.rawValue
-              ) else {
-            throw PreviewError.decodeFailed
-        }
+                space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+              ) else { throw PreviewError.decodeFailed }
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return buffer
+        let seconds = decoded.1.seconds.isFinite ? decoded.1.seconds : time.seconds
+        return (buffer, seconds)
     }
 
     private func image(from buffer: CVPixelBuffer) throws -> CGImage {
         let ciImage = CIImage(cvPixelBuffer: buffer)
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-            throw PreviewError.renderFailed
-        }
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { throw PreviewError.renderFailed }
         return cgImage
     }
 }
 
 enum PreviewError: LocalizedError {
-    case noFrame
-    case decodeFailed
-    case renderFailed
-
+    case noFrame, decodeFailed, renderFailed
     var errorDescription: String? {
         switch self {
-        case .noFrame:
-            return "There's no frame to preview yet."
-        case .decodeFailed:
-            return "Couldn't read a frame at that point in the video."
-        case .renderFailed:
-            return "Couldn't draw the preview."
+        case .noFrame: "There's no frame to preview yet."
+        case .decodeFailed: "Couldn't read a frame at that point in the video."
+        case .renderFailed: "Couldn't draw the preview."
         }
     }
 }

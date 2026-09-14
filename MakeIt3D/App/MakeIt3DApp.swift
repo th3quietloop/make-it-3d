@@ -77,8 +77,13 @@ final class MakeIt3DAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
-        guard let model, model.isConverting else { return .terminateNow }
-        return model.confirmQuitWhileConverting() ? .terminateNow : .terminateCancel
+        guard let model else { return .terminateNow }
+        guard !model.isConverting || model.confirmQuitWhileConverting() else { return .terminateCancel }
+        Task { @MainActor in
+            await model.cleanUpForQuit()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -137,6 +142,14 @@ struct MakeIt3DCommands: Commands {
         // Finder keys for a Finder-shaped list. The queue reads as a list of
         // files, so the shortcuts people already have in their hands have to
         // work: select a run, select the lot, delete the selection.
+        CommandGroup(replacing: .undoRedo) {
+            Button(model.editUndoManager.undoMenuItemTitle) { model.editUndoManager.undo() }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!model.editUndoManager.canUndo || model.isConverting)
+            Button(model.editUndoManager.redoMenuItemTitle) { model.editUndoManager.redo() }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!model.editUndoManager.canRedo || model.isConverting)
+        }
         CommandGroup(after: .pasteboard) {
             Divider()
             Button("Select All Videos") { model.selectAll() }
@@ -149,6 +162,14 @@ struct MakeIt3DCommands: Commands {
         }
 
         CommandGroup(after: .newItem) {
+            Divider()
+            Button("Open Session…") { model.openSession() }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(model.queueRunning || model.proofTask != nil)
+            Button("Save Session As…") { model.saveSessionAs() }
+                .keyboardShortcut("s", modifiers: .command)
+            Button("Export History…") { model.workspace.historyPresented = true }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
             Divider()
             Button("Send to Vision Pro") {
                 if case .done(let url)? = model.selection?.status { model.share(url) }
@@ -169,11 +190,11 @@ struct MakeIt3DCommands: Commands {
         }
 
         CommandMenu("Queue") {
-            Button("Convert Selected") { model.convertSelected() }
+            Button("Export Selected…") { model.showExportPreflight(for: model.selectedReady) }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(model.selectedReady.isEmpty || model.queuePhase != .idle)
 
-            Button("Convert All Ready") { model.convertAllReady() }
+            Button("Export All Ready…") { model.showExportPreflight(for: model.readyToConvert, scope: .allReadyIncludingAdditions) }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
                 .disabled(model.readyToConvert.isEmpty || model.queuePhase != .idle)
 
@@ -183,6 +204,10 @@ struct MakeIt3DCommands: Commands {
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
                 .disabled(!model.canPrioritize(model.selectedPriorityCandidates))
 
+            Button("Move Selected Up") { model.moveSelection(by: -1) }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .control])
+            Button("Move Selected Down") { model.moveSelection(by: 1) }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .control])
             Button("Skip Focused Video") {
                 if let selection = model.selection { model.skip(selection) }
             }
@@ -222,11 +247,17 @@ struct MakeIt3DCommands: Commands {
                     .keyboardShortcut(KeyEquivalent(mode.shortcut), modifiers: [])
             }
             Divider()
-            Button(model.preview.isWigglePlaying ? "Pause Alternating" : "Start Alternating") {
-                model.toggleWiggle()
+            Button(model.playback.isPlaying ? "Pause" : "Play / Pause") {
+                if model.previewMode == .source || model.playback.isShowingProof { model.playback.togglePlayback() }
+                else { model.toggleWiggle() }
             }
             .keyboardShortcut(.space, modifiers: [])
-            .disabled(model.previewMode != .wiggle || model.preview.reduceMotion)
+            .disabled(model.selection == nil)
+            Button("Bookmark Frame") { model.toggleBookmark() }
+                .keyboardShortcut("b", modifiers: .command)
+            Button("Create 5-Second Proof") { model.makeProof() }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .disabled(model.selection?.probe == nil || model.selection?.planningProgress != nil || model.queueRunning || model.proofTask != nil)
 
             Button("Show Other Eye") { model.preview.flipEye() }
                 .keyboardShortcut("e", modifiers: .command)
@@ -258,6 +289,8 @@ struct MakeIt3DCommands: Commands {
         }
 
         CommandMenu("Debug") {
+            Button("Export Diagnostics…") { model.exportDiagnostics() }
+            Divider()
             Button("Convert Golden Set") { model.queueGoldenSet() }
             Button("Reveal Golden Set Folder") { model.revealGoldenSetFolder() }
             Divider()
@@ -323,15 +356,29 @@ struct SettingsView: View {
                     }
                 }
 
-                Text("{name} becomes the original filename.")
+                Text("Preview: " + AppModel.safeOutputName(pattern: model.filenamePattern, sourceName: model.selection?.displayName ?? "My video") + ".mov")
+                    .font(Tokens.Font.caption)
+                Text("{name} becomes the original filename. Unsupported characters are replaced safely.")
                     .font(Tokens.Font.caption)
                     .foregroundStyle(Tokens.Palette.textSecondary)
             } header: {
                 SectionLabel(text: "Exports")
             }
+            ModelPerformanceSettings(model: model)
+            ModelLibrarySettings(model: model)
+            Section("Workspace") {
+                Text("Your queue, settings, scenes, bookmarks and export history are saved automatically on this Mac.")
+                    .font(.callout).foregroundStyle(.secondary)
+                if let error = model.workspace.saveError { Text(error).foregroundStyle(.orange) }
+                HStack {
+                    Button("Save Session As…") { model.saveSessionAs() }
+                    Button("Export History…") { model.workspace.historyPresented = true }
+                    Button("Diagnostics…") { model.exportDiagnostics() }
+                }
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 220)
+        .frame(width: 580, height: 650)
     }
 
     private func chooseFolder() {

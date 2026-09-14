@@ -20,6 +20,13 @@ struct ConversionRequest: Sendable {
     /// whole file, which is what this app did before and is still what happens
     /// if you never press Auto.
     var shotPlan: ShotPlan?
+    var timeRange: CMTimeRange? = nil
+    var depthOverrides: DepthOverrides = .init()
+
+    var estimatedFrameCount: Int {
+        guard let timeRange else { return probe.estimatedFrameCount }
+        return max(1, Int((timeRange.duration.seconds * probe.nominalFrameRate).rounded()))
+    }
 
     /// The tuning in force at a given moment.
     ///
@@ -28,8 +35,9 @@ struct ConversionRequest: Sendable {
     /// face two feet from the lens and a valley two miles away do not want the
     /// same depth, and a film cuts between them every few seconds.
     func tuning(at time: CMTime) -> EngineTuning {
-        guard let shot = shotPlan?.shot(at: time) else { return tuning }
-        return AutoTune.apply(shot.settings, to: tuning)
+        let shot = shotPlan?.shot(at: time)
+        let result = shot.map { AutoTune.apply($0.settings, to: tuning) } ?? tuning
+        return depthOverrides.applying(to: result, shotID: shot?.id)
     }
 }
 
@@ -51,7 +59,7 @@ enum ConversionController {
         do {
             let stage = try await Stage(request: request)
             activeStage = stage
-            onEvent(.started(totalFrames: request.probe.estimatedFrameCount))
+            onEvent(.started(totalFrames: request.estimatedFrameCount))
 
             // The video model is used when it is present and asked for, and the
             // per frame model otherwise. Falling back rather than failing means
@@ -77,7 +85,10 @@ enum ConversionController {
             let report = await VerificationReport.verify(
                 outputURL: request.outputURL,
                 sourceProbe: request.probe,
-                writtenFrameCount: stage.writer.frameCount
+                writtenFrameCount: stage.writer.frameCount,
+                sourceFrameCount: stage.source.decodedFrameCount,
+                tuning: request.tuning,
+                timeRange: stage.timeRange
             )
             onEvent(.finished(report))
 
@@ -97,9 +108,13 @@ enum ConversionController {
         let source: Ingest.FrameSource
         let pool: FramePool
         let request: ConversionRequest
+        let timeRange: CMTimeRange?
+        private var lastShotID: Int?
 
         init(request: ConversionRequest) async throws {
+            try request.tuning.validate()
             self.request = request
+            timeRange = try Ingest.validatedRange(request.timeRange, duration: request.probe.duration)
             renderer = try WarpRenderer(
                 frameWidth: request.probe.width,
                 frameHeight: request.probe.height,
@@ -108,9 +123,10 @@ enum ConversionController {
             writer = try await SpatialWriter.open(
                 outputURL: request.outputURL,
                 probe: request.probe,
-                tuning: request.tuning
+                tuning: request.tuning,
+                timeRange: timeRange
             )
-            source = try await Ingest.FrameSource.open(probe: request.probe)
+            source = try await Ingest.FrameSource.open(probe: request.probe, timeRange: timeRange)
             // Eye buffers come from a pool rather than being allocated once and
             // reused. The writer retains whatever it is handed and the encoder
             // reads it asynchronously, so a frame is not free to be overwritten
@@ -127,10 +143,15 @@ enum ConversionController {
             // because with a shot plan they change at every cut. Without a plan
             // this returns the same value every time and costs a dictionary
             // free comparison.
+            let shotID = request.shotPlan?.shot(at: frame.time)?.id
+            if let lastShotID, lastShotID != shotID { renderer.resetBackgroundPlate() }
+            lastShotID = shotID
+            let frameTuning = request.tuning(at: frame.time)
+            renderer.updateTuning(frameTuning)
             let field = Disparity.field(
                 from: nearness,
                 frameWidth: request.probe.width,
-                tuning: request.tuning(at: frame.time)
+                tuning: frameTuning
             )
             let left = try pool.next()
             let right = try pool.next()
@@ -154,11 +175,12 @@ enum ConversionController {
         request: ConversionRequest,
         onEvent: @escaping @Sendable (ConversionEvent) -> Void
     ) async throws -> Bool {
-        let estimator = try CoreMLDepthEstimator()
+        let estimator = try CoreMLDepthEstimator(computePreference: request.tuning.computePreference)
         let stabilizer = Stabilizer(tuning: request.tuning)
+        let motionEstimator = FrameMotionEstimator()
 
         var framesDone = 0
-        let total = max(request.probe.estimatedFrameCount, 1)
+        let total = max(request.estimatedFrameCount, 1)
 
         while let frame = try stage.source.next() {
             if Task.isCancelled {
@@ -167,7 +189,8 @@ enum ConversionController {
             }
 
             let raw = try estimator.nearness(from: frame.pixelBuffer)
-            let stabilized = stabilizer.stabilize(raw)
+            let motion = motionEstimator.analyze(frame.pixelBuffer)
+            let stabilized = stabilizer.stabilize(raw, motion: motion)
 
             // The background plate is a memory of the current shot. Across a
             // cut that memory is worse than nothing, so it goes.
@@ -204,7 +227,7 @@ enum ConversionController {
         request: ConversionRequest,
         onEvent: @escaping @Sendable (ConversionEvent) -> Void
     ) async throws -> Bool {
-        let estimator = try VideoDepthEstimator()
+        let estimator = try VideoDepthEstimator(computePreference: request.tuning.computePreference)
         let stabilizer = Stabilizer(tuning: request.tuning)
 
         let windowLength = estimator.windowLength
@@ -213,7 +236,7 @@ enum ConversionController {
         var window: [Ingest.Frame] = []
         var carriedMaps: [NearnessMap] = []
         var framesDone = 0
-        let total = max(request.probe.estimatedFrameCount, 1)
+        let total = max(request.estimatedFrameCount, 1)
         var reachedEnd = false
 
         func process(isFinal: Bool) throws -> Bool {

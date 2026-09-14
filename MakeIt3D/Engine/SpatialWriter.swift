@@ -2,6 +2,7 @@ import AVFoundation
 import CoreMedia
 import VideoToolbox
 import Foundation
+import Darwin
 
 enum SpatialWriterError: LocalizedError {
     case unsupportedEncoder
@@ -37,6 +38,21 @@ protocol SpatialVideoWriting: AnyObject {
     var outputURL: URL { get }
 }
 
+/// Higher-bit-depth writer support is exercised by HDRCapabilityCheck. The app
+/// conversion continues to request SDR until its complete renderer is HDR-capable.
+enum SpatialColorEncoding: Sendable {
+    case sdr, hlg, pq
+    var pixelFormat: OSType {
+        self == .sdr ? Ingest.pixelFormat : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+    }
+    var properties: [String: String] {
+        [AVVideoColorPrimariesKey: self == .sdr ? AVVideoColorPrimaries_ITU_R_709_2 : AVVideoColorPrimaries_ITU_R_2020,
+         AVVideoTransferFunctionKey: self == .sdr ? AVVideoTransferFunction_ITU_R_709_2
+            : (self == .hlg ? AVVideoTransferFunction_ITU_R_2100_HLG : AVVideoTransferFunction_SMPTE_ST_2084_PQ),
+         AVVideoYCbCrMatrixKey: self == .sdr ? AVVideoYCbCrMatrix_ITU_R_709_2 : AVVideoYCbCrMatrix_ITU_R_2020]
+    }
+}
+
 /// Writes MV-HEVC spatial video: two tagged layers in one HEVC track, carrying
 /// the spatial metadata visionOS reads, with the source audio passed through
 /// untouched.
@@ -47,19 +63,26 @@ final class SpatialWriter: SpatialVideoWriting {
     private let writer: AVAssetWriter
     private let videoInput: AVAssetWriterInput
     private let videoAdaptor: AVAssetWriterInputTaggedPixelBufferGroupAdaptor
-    private let audioInput: AVAssetWriterInput?
-    private let audioSource: AudioPassthrough?
+    private final class AudioChannel {
+        let input: AVAssetWriterInput
+        let source: AudioPassthrough
+        var pending: CMSampleBuffer?
+        var drained = false
+        init(input: AVAssetWriterInput, source: AudioPassthrough) {
+            self.input = input
+            self.source = source
+        }
+    }
+    private var audioChannels: [AudioChannel] = []
+    private let stagingURL: URL
+    private let timeRange: CMTimeRange?
+    private var committed = false
+    private var audioSamplesWritten = 0
 
     private let width: Int
     private let height: Int
     private var started = false
     private var appendedFrames = 0
-
-    /// An audio sample pulled from the source but not yet accepted by the
-    /// writer, either because it belongs to a later moment than the video has
-    /// reached or because the audio input was momentarily full.
-    private var pendingAudio: CMSampleBuffer?
-    private var audioDrained = false
 
     /// How far ahead of the video the audio track is kept. AVAssetWriter will
     /// not let one input run far ahead of another, so audio has to be fed as
@@ -79,11 +102,14 @@ final class SpatialWriter: SpatialVideoWriting {
     static func open(
         outputURL: URL,
         probe: SourceProbe,
-        tuning: EngineTuning
+        tuning: EngineTuning,
+        timeRange: CMTimeRange? = nil,
+        colorEncoding: SpatialColorEncoding = .sdr
     ) async throws -> SpatialWriter {
-        let audio = probe.hasAudio ? try? await AudioPassthrough.open(url: probe.url) : nil
+        let audio = probe.hasAudio ? try await AudioPassthrough.open(url: probe.url, timeRange: timeRange) : []
         return try SpatialWriter(
-            outputURL: outputURL, probe: probe, tuning: tuning, audio: audio ?? nil
+            outputURL: outputURL, probe: probe, tuning: tuning,
+            audio: audio, timeRange: timeRange, colorEncoding: colorEncoding
         )
     }
 
@@ -91,7 +117,9 @@ final class SpatialWriter: SpatialVideoWriting {
         outputURL: URL,
         probe: SourceProbe,
         tuning: EngineTuning,
-        audio: AudioPassthrough?
+        audio: [AudioPassthrough],
+        timeRange: CMTimeRange?,
+        colorEncoding: SpatialColorEncoding
     ) throws {
         guard VTIsStereoMVHEVCEncodeSupported() else {
             throw SpatialWriterError.unsupportedEncoder
@@ -101,11 +129,17 @@ final class SpatialWriter: SpatialVideoWriting {
         self.width = probe.width
         self.height = probe.height
 
-        // A stale file at the destination would otherwise fail the writer.
-        try? FileManager.default.removeItem(at: outputURL)
-
+        self.timeRange = timeRange
+        guard outputURL.standardizedFileURL.resolvingSymlinksInPath()
+                != probe.url.standardizedFileURL.resolvingSymlinksInPath(),
+              !FileManager.default.fileExists(atPath: outputURL.path) else {
+            throw SpatialWriterError.setupFailed("The destination already exists. Choose a new filename.")
+        }
+        stagingURL = outputURL.deletingLastPathComponent().appendingPathComponent(
+            ".\(outputURL.lastPathComponent).\(UUID().uuidString).partial.mov"
+        )
         do {
-            writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
+            writer = try AVAssetWriter(outputURL: stagingURL, fileType: .mov)
         } catch {
             throw SpatialWriterError.setupFailed(error.localizedDescription)
         }
@@ -116,6 +150,12 @@ final class SpatialWriter: SpatialVideoWriting {
         //   baseline is micrometres, FOV is millidegrees, and the disparity
         //   adjustment is an int32 where 10000 means 1.0.
 
+        guard tuning.baselineMillimetres.isFinite, (0...1000).contains(tuning.baselineMillimetres),
+              tuning.horizontalFOVDegrees.isFinite, (1...179).contains(tuning.horizontalFOVDegrees),
+              tuning.horizontalDisparityAdjustment.isFinite,
+              (-1...1).contains(tuning.horizontalDisparityAdjustment) else {
+            throw SpatialWriterError.setupFailed("The headset metadata is outside its supported range.")
+        }
         let baselineMicrometres = UInt32((tuning.baselineMillimetres * 1000).rounded())
         let fovMillidegrees = UInt32((tuning.horizontalFOVDegrees * 1000).rounded())
         let disparityAdjustment = Int32((tuning.horizontalDisparityAdjustment * 10000).rounded())
@@ -140,18 +180,18 @@ final class SpatialWriter: SpatialVideoWriting {
         compression[kVTCompressionPropertyKey_ProjectionKind as String] =
             kCMFormatDescriptionProjectionKind_Rectilinear as String
 
+        if colorEncoding != .sdr {
+            compression[AVVideoProfileLevelKey] = kVTProfileLevel_HEVC_Main10_AutoLevel as String
+            compression[kVTCompressionPropertyKey_PreserveDynamicHDRMetadata as String] = false
+            compression[kVTCompressionPropertyKey_HDRMetadataInsertionMode as String] = kVTHDRMetadataInsertionMode_Auto
+        }
+
         let videoSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
             AVVideoWidthKey: probe.width,
             AVVideoHeightKey: probe.height,
             AVVideoCompressionPropertiesKey: compression,
-            // The warp renders into 8 bit BGRA, so the output is SDR Rec. 709
-            // regardless of what the source claimed.
-            AVVideoColorPropertiesKey: [
-                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
-                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
-                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2
-            ]
+            AVVideoColorPropertiesKey: colorEncoding.properties
         ]
 
         videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
@@ -165,7 +205,7 @@ final class SpatialWriter: SpatialVideoWriting {
         videoAdaptor = AVAssetWriterInputTaggedPixelBufferGroupAdaptor(
             assetWriterInput: videoInput,
             sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: Ingest.pixelFormat,
+                kCVPixelBufferPixelFormatTypeKey as String: colorEncoding.pixelFormat,
                 kCVPixelBufferWidthKey as String: probe.width,
                 kCVPixelBufferHeightKey as String: probe.height
             ]
@@ -173,24 +213,36 @@ final class SpatialWriter: SpatialVideoWriting {
 
         // MARK: Audio passthrough
 
-        if let audio {
+        for source in audio {
             let input = AVAssetWriterInput(
-                mediaType: .audio,
-                outputSettings: nil,
-                sourceFormatHint: audio.formatDescription
+                mediaType: .audio, outputSettings: nil,
+                sourceFormatHint: source.formatDescription
             )
             input.expectsMediaDataInRealTime = false
-            if writer.canAdd(input) {
-                writer.add(input)
-                audioInput = input
-                audioSource = audio
-            } else {
-                audioInput = nil
-                audioSource = nil
+            input.languageCode = source.languageCode
+            input.extendedLanguageTag = source.extendedLanguageTag
+            input.metadata = source.metadata
+            input.marksOutputTrackAsEnabled = source.isEnabled
+            guard writer.canAdd(input) else {
+                throw SpatialWriterError.setupFailed("An audio track could not be preserved in the output movie.")
             }
-        } else {
-            audioInput = nil
-            audioSource = nil
+            writer.add(input)
+            audioChannels.append(AudioChannel(input: input, source: source))
+        }
+        let enabled = audioChannels.filter { $0.source.isEnabled }
+        if audioChannels.count > 1, enabled.count == 1 {
+            let group = AVAssetWriterInputGroup(inputs: audioChannels.map(\.input), defaultInput: enabled[0].input)
+            guard writer.canAdd(group) else {
+                throw SpatialWriterError.setupFailed("The alternate audio track group could not be preserved.")
+            }
+            writer.add(group)
+        }
+    }
+
+    deinit {
+        if !committed {
+            writer.cancelWriting()
+            try? FileManager.default.removeItem(at: stagingURL)
         }
     }
 
@@ -209,7 +261,7 @@ final class SpatialWriter: SpatialVideoWriting {
                 writer.error?.localizedDescription ?? "The writer would not start."
             )
         }
-        writer.startSession(atSourceTime: .zero)
+        writer.startSession(atSourceTime: timeRange?.start ?? .zero)
         started = true
     }
 
@@ -218,7 +270,7 @@ final class SpatialWriter: SpatialVideoWriting {
 
         // Keep the audio track running slightly ahead of the video, otherwise
         // the video input stops accepting frames and never recovers.
-        try drainAudio(through: pair.time + Self.audioLead)
+        try drainAudioChannels(through: pair.time + Self.audioLead)
 
         // Backpressure: block until the encoder is ready rather than queueing
         // frames into memory. A feature length file would otherwise balloon.
@@ -236,7 +288,7 @@ final class SpatialWriter: SpatialVideoWriting {
             // its high water level because the audio track fell behind, this is
             // what releases it.
             if spins % 100 == 0 {
-                try drainAudio(through: .positiveInfinity)
+                try drainAudioChannels(through: .positiveInfinity)
             }
 
             // Fail loudly rather than hang. A wedged encoder used to look like
@@ -313,84 +365,97 @@ final class SpatialWriter: SpatialVideoWriting {
     /// to the given time. Never blocks: anything the writer is not ready for is
     /// held back and offered again on the next frame, so the video track keeps
     /// moving.
-    private func drainAudio(through time: CMTime) throws {
-        guard let audioInput, let audioSource, !audioDrained else { return }
-
-        while true {
-            let sample: CMSampleBuffer
-            if let pending = pendingAudio {
-                sample = pending
-            } else if let next = audioSource.next() {
-                sample = next
-            } else {
-                audioDrained = true
-                audioInput.markAsFinished()
-                return
-            }
-
-            // A passthrough reader can hand back marker buffers that carry no
-            // samples and an invalid timestamp. Comparing one of those against
-            // the target time parks it as pending forever, and because the
-            // pending slot is checked first, the drain then never advances
-            // again and the video track stalls behind it.
-            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sample)
-            guard CMSampleBufferGetNumSamples(sample) > 0, presentationTime.isNumeric else {
-                pendingAudio = nil
-                continue
-            }
-
-            if presentationTime > time {
-                pendingAudio = sample
-                return
-            }
-            guard audioInput.isReadyForMoreMediaData else {
-                pendingAudio = sample
-                return
-            }
-            guard audioInput.append(sample) else { throw mapWriterError() }
-            pendingAudio = nil
+    private func drainAudioChannels(through time: CMTime) throws {
+        for channel in audioChannels where !channel.drained {
+            try drainAudio(channel, through: time)
         }
     }
 
-    /// Flushes whatever audio is left once the video track is complete. This is
-    /// the one place blocking on the audio input is correct, because there is
-    /// no video left to starve.
-    private func finishAudio() throws {
-        guard let audioInput, audioSource != nil, !audioDrained else { return }
+    private func drainAudio(_ channel: AudioChannel, through time: CMTime) throws {
+        while !channel.drained {
+            try Task.checkCancellation()
+            let sample: CMSampleBuffer
+            if let pending = channel.pending {
+                sample = pending
+            } else if let next = try channel.source.next() {
+                sample = next
+            } else {
+                channel.drained = true
+                channel.input.markAsFinished()
+                return
+            }
+            let presentationTime = CMSampleBufferGetPresentationTimeStamp(sample)
+            guard CMSampleBufferGetNumSamples(sample) > 0, presentationTime.isNumeric else {
+                channel.pending = nil
+                continue
+            }
+            if let timeRange, presentationTime >= timeRange.end {
+                channel.pending = nil
+                channel.drained = true
+                channel.input.markAsFinished()
+                return
+            }
+            guard presentationTime <= time, channel.input.isReadyForMoreMediaData else {
+                channel.pending = sample
+                return
+            }
+            guard channel.input.append(sample) else { throw mapWriterError() }
+            channel.pending = nil
+            audioSamplesWritten += 1
+        }
+    }
 
-        while !audioDrained {
-            while !audioInput.isReadyForMoreMediaData {
-                if Task.isCancelled {
-                    cancel()
-                    throw CancellationError()
-                }
-                if writer.status == .failed { throw mapWriterError() }
+    private func finishAudio() throws {
+        var lastProgress = Date()
+        while audioChannels.contains(where: { !$0.drained }) {
+            try Task.checkCancellation()
+            if writer.status == .failed { throw mapWriterError() }
+            let before = audioSamplesWritten
+            try drainAudioChannels(through: .positiveInfinity)
+            if before != audioSamplesWritten { lastProgress = Date() }
+            if Date().timeIntervalSince(lastProgress) > 60 {
+                throw SpatialWriterError.writeFailed("The encoder stopped accepting audio while finishing.")
+            }
+            if audioChannels.contains(where: { !$0.drained }) {
                 Thread.sleep(forTimeInterval: 0.002)
             }
-            try drainAudio(through: .positiveInfinity)
         }
     }
 
     func finish() async throws {
-        try finishAudio()
-        videoInput.markAsFinished()
-        await writer.finishWriting()
-
-        if writer.status == .failed {
-            let error = mapWriterError()
-            cleanUpPartialFile()
-            throw error
+        guard appendedFrames > 0 else {
+            throw SpatialWriterError.writeFailed("The selected range contained no video frames.")
         }
+        // Audio may continue beyond the last video frame. Release video
+        // backpressure before draining that tail, otherwise both inputs wait.
+        videoInput.markAsFinished()
+        try finishAudio()
+        if let timeRange { writer.endSession(atSourceTime: timeRange.end) }
+        await writer.finishWriting()
+        try Task.checkCancellation()
+        guard writer.status == .completed else { throw mapWriterError() }
+
+        // A same-directory exclusive rename publishes a complete file atomically.
+        // Races with another export cannot replace an existing destination.
+        let status = stagingURL.path.withCString { from in
+            outputURL.path.withCString { to in renamex_np(from, to, UInt32(RENAME_EXCL)) }
+        }
+        guard status == 0 else {
+            throw SpatialWriterError.writeFailed(
+                "Couldn't publish the finished movie: \(String(cString: strerror(errno)))."
+            )
+        }
+        committed = true
     }
 
     func cancel() {
-        writer.cancelWriting()
-        audioSource?.cancel()
+        if !committed { writer.cancelWriting() }
+        audioChannels.forEach { $0.source.cancel() }
         cleanUpPartialFile()
     }
 
     private func cleanUpPartialFile() {
-        try? FileManager.default.removeItem(at: outputURL)
+        try? FileManager.default.removeItem(at: stagingURL)
     }
 
     /// Turns a writer failure into something a person can act on. A full disk is
@@ -416,49 +481,69 @@ final class AudioPassthrough {
     private let reader: AVAssetReader
     private let output: AVAssetReaderTrackOutput
     let formatDescription: CMAudioFormatDescription?
+    let languageCode: String?
+    let extendedLanguageTag: String?
+    let metadata: [AVMetadataItem]
+    let isEnabled: Bool
 
-    /// Loads the audio track properly before opening the reader.
-    ///
-    /// The synchronous `tracks(withMediaType:)` accessor returns an empty array
-    /// on a freshly created asset, because nothing has been loaded yet. Using
-    /// it here silently produced files with no audio at all: the initializer
-    /// threw "no audio track", the caller's `try?` swallowed it, and the writer
-    /// carried on without an audio input.
-    static func open(url: URL) async throws -> AudioPassthrough? {
+    static func open(url: URL, timeRange: CMTimeRange? = nil) async throws -> [AudioPassthrough] {
         let asset = AVURLAsset(url: url)
-        guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
-            return nil
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        var sources: [AudioPassthrough] = []
+        for track in tracks {
+            let trackRange = try await track.load(.timeRange)
+            if let timeRange, CMTimeRangeGetIntersection(trackRange, otherRange: timeRange).isEmpty {
+                continue
+            }
+            let formats = try await track.load(.formatDescriptions)
+            let language = try await track.load(.languageCode)
+            let extended = try await track.load(.extendedLanguageTag)
+            let metadata = try await track.load(.metadata)
+            let enabled = try await track.load(.isEnabled)
+            sources.append(try AudioPassthrough(
+                asset: asset, track: track, formatDescription: formats.first,
+                languageCode: language, extendedLanguageTag: extended,
+                metadata: metadata, isEnabled: enabled, timeRange: timeRange
+            ))
         }
-        let formats = try await track.load(.formatDescriptions)
-        return try AudioPassthrough(asset: asset, track: track, formatDescription: formats.first)
+        return sources
     }
 
     private init(
-        asset: AVURLAsset,
-        track: AVAssetTrack,
-        formatDescription: CMAudioFormatDescription?
+        asset: AVURLAsset, track: AVAssetTrack,
+        formatDescription: CMAudioFormatDescription?, languageCode: String?,
+        extendedLanguageTag: String?, metadata: [AVMetadataItem], isEnabled: Bool,
+        timeRange: CMTimeRange?
     ) throws {
         reader = try AVAssetReader(asset: asset)
         self.formatDescription = formatDescription
-
-        // nil output settings means hand back the samples exactly as stored.
+        self.languageCode = languageCode
+        self.extendedLanguageTag = extendedLanguageTag
+        self.metadata = metadata
+        self.isEnabled = isEnabled
         output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
         output.alwaysCopiesSampleData = false
-
+        if let timeRange { reader.timeRange = timeRange }
         guard reader.canAdd(output) else {
             throw SpatialWriterError.setupFailed("The audio track could not be read.")
         }
         reader.add(output)
         guard reader.startReading() else {
-            throw SpatialWriterError.setupFailed("The audio reader would not start.")
+            throw SpatialWriterError.setupFailed(
+                reader.error?.localizedDescription ?? "The audio reader would not start."
+            )
         }
     }
 
-    func next() -> CMSampleBuffer? {
-        output.copyNextSampleBuffer()
+    func next() throws -> CMSampleBuffer? {
+        let sample = output.copyNextSampleBuffer()
+        if sample == nil, reader.status == .failed {
+            throw SpatialWriterError.writeFailed(
+                "Reading source audio failed. \(reader.error?.localizedDescription ?? "Unknown reader error.")"
+            )
+        }
+        return sample
     }
 
-    func cancel() {
-        reader.cancelReading()
-    }
+    func cancel() { reader.cancelReading() }
 }

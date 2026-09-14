@@ -46,6 +46,8 @@ final class WarpRenderer {
     private struct PlateUniforms {
         var backgroundLevel: Float
         var blend: Float
+        var translation: SIMD2<Float>
+        var motionConfidence: Float
     }
 
     private struct UpsampleUniforms {
@@ -71,8 +73,9 @@ final class WarpRenderer {
     private let anaglyphPipeline: MTLComputePipelineState
     private let plateUpdatePipeline: MTLComputePipelineState
     private let plateSeedPipeline: MTLComputePipelineState
+    private let reconstructionPipeline: MTLComputePipelineState
 
-    private let tuning: EngineTuning
+    private var tuning: EngineTuning
     private let frameWidth: Int
     private let frameHeight: Int
 
@@ -96,8 +99,13 @@ final class WarpRenderer {
     private var plateFront: MTLTexture
     private var plateBack: MTLTexture
     private var plateSeeded = false
+    private let motionEstimator = FrameMotionEstimator()
+    private var frameMotion = FrameMotion()
 
     init(frameWidth: Int, frameHeight: Int, tuning: EngineTuning) throws {
+        guard frameWidth > 0, frameHeight > 0, frameWidth <= 16384, frameHeight <= 16384 else {
+            throw WarpError.textureAllocationFailed
+        }
         guard let device = MTLCreateSystemDefaultDevice() else { throw WarpError.noDevice }
         guard let queue = device.makeCommandQueue() else { throw WarpError.noDevice }
 
@@ -128,6 +136,7 @@ final class WarpRenderer {
         anaglyphPipeline = try computePipeline("anaglyph")
         plateUpdatePipeline = try computePipeline("updateBackgroundPlate")
         plateSeedPipeline = try computePipeline("seedBackgroundPlate")
+        reconstructionPipeline = try computePipeline("reconstructionMask")
 
         guard let vertexFunction = library.makeFunction(name: "warpVertex"),
               let fragmentFunction = library.makeFunction(name: "warpFragment") else {
@@ -231,6 +240,10 @@ final class WarpRenderer {
         )
     }
 
+    /// Geometry is fixed at construction; every picture-affecting uniform is
+    /// read from this value on the next render.
+    func updateTuning(_ tuning: EngineTuning) { self.tuning = tuning }
+
     // MARK: Synthesis
 
     /// Renders both eye views for one frame.
@@ -248,6 +261,8 @@ final class WarpRenderer {
         let leftTexture = try texture(from: destinationLeft, format: .bgra8Unorm)
         let rightTexture = try texture(from: destinationRight, format: .bgra8Unorm)
 
+        frameMotion = motionEstimator.analyze(source)
+        if frameMotion.sceneCut { plateSeeded = false }
         try prepareDisparity(disparity, sourceTexture: sourceTexture)
 
         if tuning.fillDisocclusions {
@@ -282,8 +297,8 @@ final class WarpRenderer {
         // right eye and nothing else. Caught by the visionOS session, which
         // hit it by porting this renderer and running both eyes through one
         // path.
-        encodeEye(commandBuffer, source: sourceTexture, destination: leftTexture, eye: .left)
-        encodeEye(commandBuffer, source: sourceTexture, destination: rightTexture, eye: .right)
+        try encodeEye(commandBuffer, source: sourceTexture, destination: leftTexture, eye: .left)
+        try encodeEye(commandBuffer, source: sourceTexture, destination: rightTexture, eye: .right)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
 
@@ -294,7 +309,8 @@ final class WarpRenderer {
 
     /// Uploads the disparity field and runs the guided upsample to frame size.
     private func prepareDisparity(_ field: Disparity.Field, sourceTexture: MTLTexture) throws {
-        if lowDisparityTexture.width != field.width || lowDisparityTexture.height != field.height {
+        if lowDisparityTexture.width != field.width || lowDisparityTexture.height != field.height
+            || lowDisparityTexture.storageMode != .shared {
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
                 pixelFormat: .r32Float, width: field.width, height: field.height, mipmapped: false
             )
@@ -359,6 +375,8 @@ final class WarpRenderer {
     /// it across a cut would paint one scene's background into another's gaps.
     func resetBackgroundPlate() {
         plateSeeded = false
+        motionEstimator.reset()
+        frameMotion = FrameMotion()
     }
 
     /// Folds this frame's background into the plate.
@@ -386,7 +404,9 @@ final class WarpRenderer {
             // a flat scene and a deep one both keep a sensible slice.
             var uniforms = PlateUniforms(
                 backgroundLevel: disparity.maxNegative * Float(tuning.backgroundLevelFraction),
-                blend: Float(tuning.backgroundPlateBlend)
+                blend: Float(tuning.backgroundPlateBlend),
+                translation: frameMotion.translation,
+                motionConfidence: frameMotion.confidence
             )
             encoder.setComputePipelineState(plateUpdatePipeline)
             encoder.setTexture(source, index: 0)
@@ -419,18 +439,18 @@ final class WarpRenderer {
         source: MTLTexture,
         destination: MTLTexture,
         eye: Disparity.Eye
-    ) {
+    ) throws {
         guard tuning.fillDisocclusions, plateSeeded else {
-            encodeWarp(commandBuffer, source: source, destination: destination, eye: eye, clear: true)
+            try encodeWarp(commandBuffer, source: source, destination: destination, eye: eye, clear: true)
             return
         }
         // No stretch limit on the plate pass: it is the fallback layer and has
         // to cover the whole frame.
-        encodeWarp(
+        try encodeWarp(
             commandBuffer, source: plateFront, destination: destination,
             eye: eye, clear: true, stretchLimit: .greatestFiniteMagnitude
         )
-        encodeWarp(
+        try encodeWarp(
             commandBuffer, source: source, destination: destination,
             eye: eye, clear: false, stretchLimit: Float(tuning.stretchLimit)
         )
@@ -443,14 +463,16 @@ final class WarpRenderer {
         eye: Disparity.Eye,
         clear: Bool,
         stretchLimit: Float = .greatestFiniteMagnitude
-    ) {
+    ) throws {
         let descriptor = MTLRenderPassDescriptor()
         descriptor.colorAttachments[0].texture = destination
         descriptor.colorAttachments[0].loadAction = clear ? .clear : .load
         descriptor.colorAttachments[0].storeAction = .store
         descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
 
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            throw WarpError.pipelineFailed("The eye render encoder could not be created.")
+        }
 
         var uniforms = WarpUniforms(
             frameSize: SIMD2<Float>(Float(frameWidth), Float(frameHeight)),
@@ -534,6 +556,28 @@ final class WarpRenderer {
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+    }
+
+    /// Amber identifies large depth slopes where one eye needs substantial
+    /// reconstruction. It is a risk map, not a claim that every marked pixel is bad.
+    func renderReconstructionMask(disparity: Disparity.Field, source: CVPixelBuffer,
+                                  into destination: CVPixelBuffer) throws {
+        let sourceTexture = try texture(from: source, format: .bgra8Unorm)
+        let destinationTexture = try texture(from: destination, format: .bgra8Unorm)
+        try prepareDisparity(disparity, sourceTexture: sourceTexture)
+        guard let command = queue.makeCommandBuffer(),
+              let encoder = command.makeComputeCommandEncoder() else {
+            throw WarpError.pipelineFailed("No reconstruction preview encoder.")
+        }
+        encoder.setComputePipelineState(reconstructionPipeline)
+        encoder.setTexture(sourceTexture, index: 0)
+        encoder.setTexture(highDisparityTexture, index: 1)
+        encoder.setTexture(destinationTexture, index: 2)
+        dispatch(encoder, pipeline: reconstructionPipeline, width: frameWidth, height: frameHeight)
+        encoder.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        if let error = command.error { throw WarpError.pipelineFailed(error.localizedDescription) }
     }
 
     // MARK: Helpers

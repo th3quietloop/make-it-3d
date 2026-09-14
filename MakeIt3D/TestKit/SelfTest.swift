@@ -59,7 +59,7 @@ enum SelfTest {
         // MARK: Synthetic clip end to end
 
         let workingDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MakeIt3DSelfTest", isDirectory: true)
+            .appendingPathComponent("MakeIt3DSelfTest-\(UUID())", isDirectory: true)
         try? FileManager.default.createDirectory(
             at: workingDirectory, withIntermediateDirectories: true
         )
@@ -89,7 +89,7 @@ enum SelfTest {
         // different loop through the whole pipeline. If it is in the bundle it
         // gets exercised too, because a path that is never run is a path that
         // is never known to work.
-        if VideoDepthEstimator.isAvailable, let clip = clips.first {
+        if CommandLine.arguments.contains("--include-video-model"), VideoDepthEstimator.isAvailable, let clip = clips.first {
             print("")
             print(String(repeating: "-", count: 60))
             print("Converting \(clip.lastPathComponent) with the video depth model")
@@ -99,9 +99,15 @@ enum SelfTest {
                 clip, into: workingDirectory, tuning: tuning, suffix: "_spatial_video"
             )
             if !passed { allPassed = false }
-        } else if !VideoDepthEstimator.isAvailable {
-            print("")
-            print("NOTE  Video depth model not in the bundle, windowed path not exercised.")
+        } else {
+            print("SKIP  Experimental video model: opt in with --include-video-model; this path may take many minutes.")
+        }
+        let integrity = await MediaIntegrityCheck.run(in: workingDirectory)
+        if !integrity { allPassed = false }
+        if CommandLine.arguments.contains("--hdr-writer-probe") {
+            let hdr = await HDRCapabilityCheck.run(in: workingDirectory)
+            print("\(hdr.passed ? "PASS" : "FAIL")  HDR writer capability: \(hdr.detail)")
+            if !hdr.passed { allPassed = false }
         }
 
         print("")

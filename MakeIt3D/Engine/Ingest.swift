@@ -14,6 +14,9 @@ struct SourceProbe: Sendable, Equatable {
     let hasAudio: Bool
     /// Best effort frame count, from duration times frame rate.
     let estimatedFrameCount: Int
+    var videoDuration: CMTime? = nil
+    var audioTrackCount: Int = 0
+    var isHDR: Bool = false
 
     var displayDuration: String {
         Timecode.string(from: duration.seconds)
@@ -62,6 +65,15 @@ struct Ingest {
         let transform = try await track.load(.preferredTransform)
         let rate = try await track.load(.nominalFrameRate)
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        let videoRange = try await track.load(.timeRange)
+        let formats = try await track.load(.formatDescriptions)
+        let hdr = formats.contains { format in
+            let transfer = CMFormatDescriptionGetExtension(
+                format, extensionKey: kCMFormatDescriptionExtension_TransferFunction
+            ) as? String
+            return transfer == kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String
+                || transfer == kCVImageBufferTransferFunction_ITU_R_2100_HLG as String
+        }
 
         // A rotated track reports its pre transform size, so apply the
         // transform to get the size the viewer will actually see.
@@ -69,10 +81,13 @@ struct Ingest {
         let width = Int(abs(displaySize.width).rounded())
         let height = Int(abs(displaySize.height).rounded())
 
-        guard width > 0, height > 0 else { throw IngestError.unreadable(url) }
+        guard width > 0, height > 0, duration.seconds.isFinite, duration.seconds > 0,
+              videoRange.duration.seconds.isFinite, videoRange.duration.seconds > 0 else {
+            throw IngestError.unreadable(url)
+        }
 
         let fps = rate > 0 ? Double(rate) : 30.0
-        let frames = max(1, Int((duration.seconds * fps).rounded()))
+        let frames = max(1, Int((videoRange.duration.seconds * fps).rounded()))
 
         return SourceProbe(
             url: url,
@@ -81,8 +96,28 @@ struct Ingest {
             width: width,
             height: height,
             hasAudio: !audioTracks.isEmpty,
-            estimatedFrameCount: frames
+            estimatedFrameCount: frames,
+            videoDuration: videoRange.duration,
+            audioTrackCount: audioTracks.count,
+            isHDR: hdr
         )
+    }
+
+    /// Clamps a requested audition to the asset timeline; invalid/empty ranges fail
+    /// before either reader or destination is opened.
+    static func validatedRange(_ requested: CMTimeRange?, duration: CMTime) throws -> CMTimeRange? {
+        guard let requested else { return nil }
+        guard requested.isValid, requested.start.isNumeric,
+              requested.duration.isNumeric, requested.duration > .zero else {
+            throw IngestError.readerFailed("Choose a nonempty preview range.")
+        }
+        let bounded = CMTimeRangeGetIntersection(
+            requested, otherRange: CMTimeRange(start: .zero, duration: duration)
+        )
+        guard bounded.isValid, !bounded.isEmpty else {
+            throw IngestError.readerFailed("The preview range falls outside this video.")
+        }
+        return bounded
     }
 
     // MARK: Thumbnails
@@ -126,21 +161,28 @@ struct Ingest {
         private var index = 0
 
         let probe: SourceProbe
+        var decodedFrameCount: Int { index }
 
-        static func open(probe: SourceProbe) async throws -> FrameSource {
+        static func open(probe: SourceProbe, timeRange: CMTimeRange? = nil) async throws -> FrameSource {
             let asset = AVURLAsset(url: probe.url)
             let tracks = try await asset.loadTracks(withMediaType: .video)
             guard !tracks.isEmpty else { throw IngestError.noVideoTrack }
             let composition = try await AVMutableVideoComposition.videoComposition(withPropertiesOf: asset)
             composition.renderSize = CGSize(width: probe.width, height: probe.height)
-            return try FrameSource(probe: probe, asset: asset, tracks: tracks, composition: composition)
+            // Tone-map before reducing HDR input to the pipeline's BGRA8 buffers.
+            // Merely tagging the writer Rec.709 would reinterpret clipped HDR values.
+            composition.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+            composition.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+            composition.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+            return try FrameSource(probe: probe, asset: asset, tracks: tracks, composition: composition, timeRange: timeRange)
         }
 
         private init(
             probe: SourceProbe,
             asset: AVURLAsset,
             tracks: [AVAssetTrack],
-            composition: AVMutableVideoComposition
+            composition: AVMutableVideoComposition,
+            timeRange: CMTimeRange?
         ) throws {
             self.probe = probe
             do {
@@ -149,6 +191,7 @@ struct Ingest {
                 throw IngestError.readerFailed(error.localizedDescription)
             }
 
+            if let timeRange { reader.timeRange = timeRange }
             let compositionOutput = AVAssetReaderVideoCompositionOutput(
                 videoTracks: tracks,
                 videoSettings: [
@@ -174,22 +217,23 @@ struct Ingest {
 
         /// Pulls the next decoded frame, or nil at end of stream.
         func next() throws -> Frame? {
-            guard let sample = output.copyNextSampleBuffer() else {
-                if reader.status == .failed {
-                    throw IngestError.readerFailed(
-                        reader.error?.localizedDescription ?? "Reading stopped unexpectedly."
-                    )
+            while true {
+                try Task.checkCancellation()
+                guard let sample = output.copyNextSampleBuffer() else {
+                    if reader.status == .failed {
+                        throw IngestError.readerFailed(
+                            reader.error?.localizedDescription ?? "Reading stopped unexpectedly."
+                        )
+                    }
+                    return nil
                 }
-                return nil
+                guard let buffer = CMSampleBufferGetImageBuffer(sample) else { continue }
+                let time = CMSampleBufferGetPresentationTimeStamp(sample)
+                guard time.isNumeric else { continue }
+                let frame = Frame(pixelBuffer: buffer, time: time, index: index)
+                index += 1
+                return frame
             }
-            guard let buffer = CMSampleBufferGetImageBuffer(sample) else {
-                // A sample with no image buffer is not fatal; skip it.
-                return try next()
-            }
-            let time = CMSampleBufferGetPresentationTimeStamp(sample)
-            let frame = Frame(pixelBuffer: buffer, time: time, index: index)
-            index += 1
-            return frame
         }
 
         func cancel() {

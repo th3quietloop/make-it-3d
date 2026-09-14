@@ -44,25 +44,7 @@ enum SpatialCLI {
     static func read(_ url: URL) -> Reading? {
         guard let executableURL else { return nil }
 
-        let process = Process()
-        process.executableURL = executableURL
-        process.arguments = ["info", "-i", url.path]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0,
-              let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let text = run(executableURL, arguments: ["info", "-i", url.path]) else { return nil }
 
         return Reading(
             hasLeftEye: text.contains("Has left eye"),
@@ -86,7 +68,8 @@ enum SpatialCLI {
             return VerificationReport.Check(
                 name: "Independent reader",
                 passed: true,
-                detail: "spatial CLI not installed, skipped. Install with: brew install spatial"
+                detail: "spatial CLI not installed. Install with: brew install spatial",
+                skipped: true
             )
         }
 
@@ -171,22 +154,36 @@ enum SpatialCLI {
     }
 
     private static func which(_ tool: String) -> URL? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["which", tool]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        do { try process.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0,
-              let path = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty else { return nil }
+        guard let path = run(URL(fileURLWithPath: "/usr/bin/env"), arguments: ["which", tool])?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else { return nil }
         return URL(fileURLWithPath: path)
+    }
+
+    /// Files keep stdout/stderr from filling a pipe and deadlocking verification.
+    /// An external reader is useful evidence, but cannot hold an export forever.
+    private static func run(_ executable: URL, arguments: [String]) -> String? {
+        let log = FileManager.default.temporaryDirectory.appendingPathComponent("spatial-\(UUID()).log")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        defer { try? FileManager.default.removeItem(at: log) }
+        guard let handle = try? FileHandle(forWritingTo: log) else { return nil }
+        defer { try? handle.close() }
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.standardOutput = handle
+        process.standardError = handle
+        do { try process.run() } catch { return nil }
+        let deadline = Date().addingTimeInterval(30)
+        while process.isRunning {
+            if Task.isCancelled || Date() >= deadline {
+                process.terminate()
+                return nil
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let data = try? Data(contentsOf: log) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 }

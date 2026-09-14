@@ -49,6 +49,11 @@ struct QueueSidebarView: View {
         }
     }
 
+    private var visibleOrder: [Conversion] {
+        [pinnedActive, pinnedNext].compactMap { $0 }
+            + (convertedExpanded ? visibleFinished : []) + visibleWork
+    }
+
     private var failedCount: Int {
         model.conversions.reduce(into: 0) { count, conversion in
             if case .failed = conversion.status { count += 1 }
@@ -125,7 +130,12 @@ struct QueueSidebarView: View {
         .focusEffectDisabled()
         .onAppear {
             if model.queueRunning { convertedExpanded = false }
+            model.visibleQueueIDs = visibleOrder.map(\.id)
         }
+        .onDisappear { model.visibleQueueIDs = nil }
+        .onChange(of: visibleOrder.map(\.id)) { _, ids in model.visibleQueueIDs = ids }
+        .onKeyPress(keys: [.upArrow], phases: .down) { key in moveFocus(by: -1, extending: key.modifiers.contains(.shift)) }
+        .onKeyPress(keys: [.downArrow], phases: .down) { key in moveFocus(by: 1, extending: key.modifiers.contains(.shift)) }
         .onChange(of: model.queueRunning) { oldValue, newValue in
             if !oldValue && newValue {
                 convertedExpanded = false
@@ -231,7 +241,7 @@ struct QueueSidebarView: View {
     }
 
     private var canRetryAll: Bool {
-        failedCount > 0 && model.queuePhase != .stopping
+        model.failedConversions.contains { model.canRetry($0) }
     }
 
     private var dragWake: some View {
@@ -284,12 +294,22 @@ struct QueueSidebarView: View {
         }
     }
 
+    private func moveFocus(by delta: Int, extending: Bool) -> KeyPress.Result {
+        let ordered = visibleOrder
+        guard !ordered.isEmpty else { return .ignored }
+        let current = ordered.firstIndex { $0.id == model.selectionID } ?? (delta > 0 ? -1 : ordered.count)
+        let target = min(max(current + delta, 0), ordered.count - 1)
+        if extending { model.extendSelection(to: ordered[target], visibleOrder: ordered.map(\.id)) }
+        else { model.select(ordered[target]) }
+        return .handled
+    }
+
     /// Finder click semantics. Shift takes the run, command picks and chooses,
     /// a plain click starts over.
     private func handleTap(_ conversion: Conversion) {
         let flags = NSEvent.modifierFlags
         if flags.contains(.shift) {
-            model.extendSelection(to: conversion)
+            model.extendSelection(to: conversion, visibleOrder: visibleOrder.map(\.id))
         } else if flags.contains(.command) {
             model.toggleSelection(conversion)
         } else {
@@ -444,6 +464,10 @@ private struct QueueSidebarRowHost: View {
             Button("Retry") { model.retry(conversion) }
         }
 
+        if conversion.sourceMissing {
+            Button("Locate source…") { model.locateSource(conversion) }
+        }
+
         if canMove || canSkip || canRetry {
             Divider()
         }
@@ -451,7 +475,7 @@ private struct QueueSidebarRowHost: View {
             Button("Send to Vision Pro") { model.share(url) }
             Button("Show in Finder") { model.reveal(url) }
             Button("Convert this again") { model.reconvert(conversion) }
-                .disabled(queueRunning)
+                .disabled(queueRunning || conversion.sourceMissing)
             Divider()
         }
         if selectedCount > 1, isSelected {

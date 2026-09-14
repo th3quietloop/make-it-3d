@@ -1,330 +1,282 @@
 import SwiftUI
+import CoreMedia
 
-/// One decision, and a drawer for everyone else.
-///
-/// This pane used to show twenty one things at rest: two named controls, a
-/// gauge, a nested disclosure, and the captions each of them needed in order to
-/// be understandable. Every one of those was a question put to someone who came
-/// here to watch a film, and the app can answer all of them better than a person
-/// can by eye. Now it shows one decision, its result, a way in for anyone who
-/// disagrees, and the commit.
-///
-/// The evidence did not disappear, it moved. The shot strip under the picture
-/// says what the depth is doing across the film, in the place where you are
-/// already looking. A panel is a worse place to prove something than the picture
-/// itself.
-///
-/// The engine's language never appears. It thinks in convergence, disparity,
-/// overscan and baseline; the terms of art live in tooltips for anyone who wants
-/// them.
+/// Keep the primary depth decisions beside the image. Technical cleanup and
+/// headset metadata remain available without competing with those decisions.
 struct InspectorView: View {
     @Bindable var model: AppModel
     let conversion: Conversion
 
-    @State private var showCustom = false
     @State private var showAdvanced = false
     @State private var showPlayback = false
+    @State private var showVerification = false
     @State private var isHoveringDestination = false
+    @State private var showVariantNaming = false
+    @State private var variantName = ""
+    @State private var proofDuration = 5.0
+    @State private var automaticProof = false
+    @State private var showBatchSettings = false
+    @State private var copyDepth = true
+    @State private var copyCleanup = false
+    @State private var copyModel = false
+    @State private var showDepthFeedback = false
 
-    private var tuning: Binding<EngineTuning> {
-        Binding(
-            get: { conversion.tuning },
-            set: { model.updateTuning($0, for: conversion) }
-        )
+    private var effectiveTuning: EngineTuning {
+        conversion.effectiveTuning(at: CMTime(seconds: model.playhead, preferredTimescale: 600))
     }
+    private var tuning: Binding<EngineTuning> {
+        Binding(get: { effectiveTuning }, set: { model.updateTuning($0, for: conversion) })
+    }
+    private var editable: Bool { !conversion.sourceMissing && !conversion.status.isConverting && conversion.planningProgress == nil }
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Tokens.Space.l) {
-                    // One hairline, not two. Two rules across a panel holding
-                    // three things makes three sections out of one thought, and
-                    // the two blocks they separated were saying the same thing.
-                    VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-                        autoSection
-                        outputFacts
+                    statusSection
+                    VStack(alignment: .leading, spacing: Tokens.Space.s) {
+                        HStack {
+                            Text("Adjust depth").font(Tokens.Font.rowTitle)
+                            Spacer()
+                            if model.hasDriftedFromAuto(conversion) {
+                                Button("Reset") { model.returnToAutomatic(conversion) }
+                                    .font(Tokens.Font.caption)
+                                    .help("Restore automatic depth for the selected scope")
+                            }
+                        }
+                        Picker("Adjustment scope", selection: $model.adjustmentScope) {
+                            Text("This shot").tag(AdjustmentScope.shot)
+                            Text("Whole video").tag(AdjustmentScope.video)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .disabled(conversion.shotPlan?.shots.isEmpty != false)
+                        strengthSection
+                        balanceSection
+                        if let reading = model.preview.reading {
+                            DisclosureGroup("Depth feedback", isExpanded: $showDepthFeedback) {
+                                VStack(alignment: .leading, spacing: Tokens.Space.xs) {
+                                    DepthGauge(reading: reading)
+                                    Text("Estimated depth load. Check the proof on your headset for comfort.")
+                                        .font(Tokens.Font.caption)
+                                        .foregroundStyle(Tokens.Palette.textSecondary)
+                                }.padding(.top, Tokens.Space.xs)
+                            }.font(Tokens.Font.caption)
+                        }
+                        variantsSection
+                        if model.selectedIDs.count > 1 {
+                            Button("Copy settings to selected videos…") { showBatchSettings = true }
+                                .font(Tokens.Font.caption)
+                                .popover(isPresented: $showBatchSettings) { batchSettingsPanel }
+                        }
                     }
+                    .disabled(!editable)
                     Hairline()
-                    customSection
-                        .disabled(conversion.status.isConverting)
-                        .help(
-                            conversion.status.isConverting
-                                ? "Depth settings are locked while this video converts."
-                                : ""
-                        )
+                    proofSection
+                    if conversion.shotPlan != nil {
+                        Button { model.workspace.reviewPresented = true } label: {
+                            Label("Review shots…", systemImage: "square.grid.2x2")
+                        }.font(Tokens.Font.body)
+                    }
+                    advancedSection.disabled(!editable)
+                    if let report = conversion.report { verificationSection(report) }
                 }
                 .padding(Tokens.Space.m)
             }
             .scrollEdgeFade()
-
-            Spacer(minLength: 0)
-
             Hairline()
-            actionStack
-                .padding(Tokens.Space.m)
+            actionStack.padding(Tokens.Space.m)
         }
         .frame(width: Tokens.Layout.inspectorWidth)
         .surfaceMaterial(.panel)
-    }
-
-    // MARK: Custom
-
-    /// Everything that used to be at the top level, behind one door.
-    ///
-    /// One door, not two. Strength, balance and the old More controls list were
-    /// three separate levels of disclosure, which is a filing cabinet rather
-    /// than a design. Anyone opening this has already decided they disagree with
-    /// Auto, and someone who disagrees wants the whole workbench, not another
-    /// chevron.
-    private var customSection: some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.s) {
-            Button {
-                withAnimation(Tokens.Motion.panelSpring) { showCustom.toggle() }
-            } label: {
-                HStack(spacing: Tokens.Space.xs) {
-                    SectionLabel(text: "Custom")
+        .popover(isPresented: $showVariantNaming) {
+            VStack(alignment: .leading, spacing: Tokens.Space.m) {
+                Text("Save a depth variant").font(Tokens.Font.rowTitle)
+                TextField("Name", text: $variantName)
+                    .onSubmit(saveVariant)
+                HStack {
+                    Button("Cancel") { showVariantNaming = false }.keyboardShortcut(.cancelAction)
                     Spacer()
-                    // Collapsed rows that say only their own name make you open
-                    // them to find out whether anything changed. Arcade prints
-                    // its current values in the collapsed row; so does this.
-                    if !showCustom {
-                        Text(currentSettingsSummary)
-                            .font(Tokens.Font.caption)
-                            .foregroundStyle(Tokens.Palette.textTertiary)
-                            .lineLimit(1)
-                    }
-                    Image(systemName: "chevron.right")
-                        .font(Tokens.Font.caption)
-                        .foregroundStyle(Tokens.Palette.textTertiary)
-                        .rotationEffect(.degrees(showCustom ? 90 : 0))
+                    Button("Save", action: saveVariant)
+                        .disabled(variantName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .keyboardShortcut(.defaultAction)
                 }
-                .contentShape(Rectangle())
-                .frame(minHeight: Tokens.Layout.minTarget)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Custom depth controls")
-            .accessibilityValue(showCustom ? "Expanded" : "\(currentSettingsSummary), collapsed")
-
-            if showCustom {
-                VStack(alignment: .leading, spacing: Tokens.Space.l) {
-                    strengthSection
-                    balanceSection
-
-                    // The gauge belongs to the sliders, not to the panel. It is
-                    // feedback for a control, and with the controls hidden it
-                    // was a readout of a decision the user did not make.
-                    if let reading = model.preview.reading {
-                        DepthGauge(reading: reading)
-                    }
-
-                    advancedSection
-                }
-                .transition(.opacity)
-            }
+            .padding(Tokens.Space.l)
+            .frame(width: 300)
         }
     }
 
-    // MARK: Auto
-
-    /// What the app worked out on its own, and what it is doing about it.
-    ///
-    /// This is not a call to action any more. Auto runs the moment a file
-    /// arrives, so by the time anyone reads this it is either working or done.
-    /// That is what removed the priority question: there is no longer a first
-    /// button and a second button, there is a status and then Convert.
-    private var autoSection: some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.m) {
+    @ViewBuilder private var statusSection: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
+            HStack(spacing: Tokens.Space.xs) {
+                Image(systemName: statusSymbol)
+                    .foregroundStyle(conversion.failureMessage == nil ? Tokens.Palette.accent : Tokens.Palette.errorText)
+                Text(statusTitle).font(Tokens.Font.bodyMedium)
+            }
             if let progress = conversion.planningProgress {
-                working(progress)
-            } else if let plan = conversion.shotPlan {
-                verdict(plan)
-            } else {
-                invitation
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(Tokens.Motion.panelSpring, value: conversion.shotPlan)
-        .animation(Tokens.Motion.panelSpring, value: conversion.planningProgress != nil)
-    }
-
-    /// Auto has not run and is not running, which now only happens if it failed
-    /// or was undone. Outlined, never filled: Convert is the only filled button
-    /// in this app, because every shipping tool in the reference set has exactly
-    /// one and it is always the commit.
-    private var invitation: some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.s) {
-            Button {
-                model.autoTune(conversion)
-            } label: {
-                HStack(spacing: Tokens.Space.xs) {
-                    Image(systemName: "wand.and.stars")
-                    Text("Set the depth for me")
+                ProgressView(value: progress).tint(Tokens.Palette.accent)
+                Text(model.analysingID == conversion.id ? "Preparing depth · \(Int(progress * 100))%" : "Waiting to prepare depth")
+                    .font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.textSecondary)
+                if model.analysingID == conversion.id, let estimate = model.learnedEstimate(for: conversion, analysis: true) {
+                    Text("Estimate: " + AppModel.humanDuration(estimate.upperBound * (1 - progress)) + " left")
+                        .font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.textSecondary)
                 }
-                .font(Tokens.Font.bodyMedium)
-                .foregroundStyle(Tokens.Palette.accent)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, Tokens.Space.xs)
-                .contentShape(Rectangle())
+            } else if let failure = conversion.failureMessage {
+                Text(failure).font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.errorText)
+            } else if let plan = conversion.shotPlan {
+                Text(plan.shots.count == 1 ? "One shot, automatically prepared." : "\(plan.shots.count) shots, automatically prepared.")
+                    .font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.textSecondary)
+            } else if conversion.status.isReady {
+                Button("Prepare automatic depth") { model.autoTune(conversion) }
+                    .buttonStyle(.link).font(Tokens.Font.caption)
             }
-            .buttonStyle(.plain)
-            .overlay(
-                RoundedRectangle(cornerRadius: Tokens.Radius.control, style: .continuous)
-                    .strokeBorder(Tokens.Palette.accent.opacity(0.4),
-                                  lineWidth: Tokens.Layout.hairlineWidth)
-            )
-            .pressable()
-            .help("Finds every cut and works out the best depth for each shot on its own.")
+            if conversion.sourceMissing {
+                Text(conversion.status.isDone ? "The original is unavailable. Your finished export is still here." : "Locate the original to continue.")
+                    .font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.textSecondary)
+                Button("Locate source…") { model.locateSource(conversion) }
+                    .buttonStyle(.link).font(Tokens.Font.caption)
+            }
+        }
+    }
+    private var statusTitle: String {
+        if conversion.planningProgress != nil { return "Preparing your video" }
+        switch conversion.status {
+        case .probing: return "Reading your video"
+        case .ready: return "Ready to inspect"
+        case .converting: return "Converting your video"
+        case .done: return conversion.settingsChangedSinceExport ? "New adjustments to export" : "Export ready"
+        case .failed: return "Needs attention"
+        }
+    }
+    private var statusSymbol: String {
+        switch conversion.status {
+        case .done: return conversion.settingsChangedSinceExport ? "slider.horizontal.3" : "checkmark.circle"
+        case .failed: return "exclamationmark.triangle"
+        case .converting, .probing: return "clock"
+        case .ready: return "viewfinder"
+        }
+    }
 
-            Text("Finds every cut and picks the depth for each shot on its own.")
+    private var variantsSection: some View {
+        HStack {
+            Menu {
+                Button("Reset scope to automatic") { model.returnToAutomatic(conversion) }
+                ForEach(model.workspace.variants.filter { $0.sourceID == conversion.id }) { variant in
+                    Button(variant.name) { model.applyVariant(variant) }
+                }
+                Divider()
+                Button("Save current variant…") { variantName = ""; showVariantNaming = true }
+                if model.workspace.variants.contains(where: { $0.sourceID == conversion.id }) {
+                    Menu("Delete variant") {
+                        ForEach(model.workspace.variants.filter { $0.sourceID == conversion.id }) { variant in
+                            Button(variant.name, role: .destructive) { model.deleteVariant(variant) }
+                        }
+                    }
+                }
+            } label: { Label("Variants", systemImage: "square.stack") }
+            .menuStyle(.borderlessButton)
+            Spacer()
+            Button("Save variant…") { variantName = ""; showVariantNaming = true }
                 .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.textTertiary)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
         }
     }
-
-    /// What the dials are currently set to, in the fewest words that are true.
-    private var currentSettingsSummary: String {
-        // Was "2.4%, reaching out". 2.4% of what, and reaching out from where.
-        // A number with no unit next to a phrase with no referent.
-        let strength: String
-        switch conversion.tuning.disparityScale {
-        case ..<0.012: strength = "Gentle depth"
-        case ..<0.020: strength = "Normal depth"
-        default: strength = "Strong depth"
-        }
-        switch conversion.tuning.convergence {
-        case ..<0.4: return "\(strength), like a window"
-        case ..<0.65: return strength
-        default: return "\(strength), comes toward you"
-        }
+    private func saveVariant() {
+        let name = variantName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        model.saveVariant(name: name)
+        showVariantNaming = false
     }
 
-    /// Depth first, comfort second, in one sentence each rather than a report.
-    private func readyDetail(_ plan: ShotPlan) -> String {
-        let shots = plan.shots.count == 1
-            ? "Depth is set."
-            : "Depth is set for all \(plan.shots.count) shots."
-        return "\(shots) \(plan.comfortNote)"
-    }
-
-    // MARK: What you are about to make
-
-    /// The facts about the file, in the space the panel used to leave empty.
-    ///
-    /// Arcade prints the output dimensions next to Generate; VEED prints
-    /// duration and file size next to Export. Committing someone to a job that
-    /// can run for hours without saying what comes out of it is the part of
-    /// this panel that was still missing after the reduction.
-    private var outputFacts: some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            // The spec sheet used to live here: four rows of resolution,
-            // length, size and time, taken from how Arcade and VEED annotate
-            // their export buttons. Those sit inside a modal somebody opened on
-            // purpose to export. This one is always on, and it was competing
-            // with the only sentence that matters at this moment.
-            //
-            // One fact survives, the one that changes whether you press the
-            // button now or after dinner. The rest moved under the button as a
-            // footnote, where facts about an action belong.
-            // "Now press Convert." is gone as a heading of its own.
-            //
-            // It and "Ready to convert" above were the same sentence twice,
-            // each given a heading, a grey paragraph and a hairline. Identical
-            // treatment on both meant neither led, which is why the panel read
-            // as bleeding together. The heading above plus the filled Convert
-            // button below already say it, and this is the detail underneath.
-            //
-            // The grammar was also broken. humanDuration returns phrases like
-            // "under a minute", so "It takes about \(duration)" produced "It
-            // takes about under a minute."
-            if let probe = conversion.probe {
-                Text("Takes \(AppModel.humanDuration(Double(probe.estimatedFrameCount) / conversion.tuning.depthModel.measuredFramesPerSecond)). You can keep working while it runs.")
-                    .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
+    private var proofSection: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.s) {
+            Text("Try a short proof").font(Tokens.Font.bodyMedium)
+            Text("Export a few seconds from the playhead before converting the whole video.")
+                .font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.textSecondary)
+            if let progress = model.workspace.proofProgress {
+                ProgressView(value: progress).tint(Tokens.Palette.accent)
+                HStack {
+                    Text(model.workspace.proofLabel ?? "Making proof…").font(Tokens.Font.caption)
+                    Spacer()
+                    Button("Cancel") { model.cancelProof() }
+                }
             } else {
-                Text("Reading the file.")
-                    .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.textTertiary)
+                HStack(spacing: Tokens.Space.s) {
+                    Text("Length").font(Tokens.Font.caption)
+                    Picker("Proof length", selection: $proofDuration) {
+                        Text("3s").tag(3.0)
+                        Text("5s").tag(5.0)
+                        Text("8s").tag(8.0)
+                    }.labelsHidden().frame(width: 70)
+                    Spacer(minLength: 0)
+                    Toggle("Auto", isOn: $automaticProof)
+                        .toggleStyle(.checkbox)
+                        .help("Use automatic depth instead of the current draft")
+                }
+                Button { model.makeProof(duration: proofDuration, automatic: automaticProof) } label: {
+                    Label("Create \(Int(proofDuration))-second proof", systemImage: "play.rectangle")
+                        .frame(maxWidth: .infinity)
+                }
+                .controlSize(.large)
+                .disabled(!editable || conversion.probe == nil || model.queueRunning)
+            }
+            if let error = model.workspace.proofError {
+                Text(error).font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.errorText)
             }
         }
     }
 
-    /// Thinking. The count is the interesting part, so it is the big thing.
-    private func working(_ progress: Double) -> some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            // The heading is a sentence and the number rides beside it. It was
-            // 20pt mono over an 11pt caption, a nine point gap that made the
-            // percentage the loudest thing in the panel while saying the least.
-            HStack(alignment: .firstTextBaseline) {
-                Text("Reading the film")
-                    .font(Tokens.Font.rowTitle)
-                    .tracking(Tokens.Tracking.forSize(Tokens.TypeScale.rowTitle))
-                    .foregroundStyle(Tokens.Palette.textPrimary)
+    private func verificationSection(_ report: VerificationReport) -> some View {
+        DisclosureGroup(isExpanded: $showVerification) {
+            VStack(alignment: .leading, spacing: Tokens.Space.s) {
+                ForEach(Array(report.checks.enumerated()), id: \.offset) { _, check in
+                    HStack(alignment: .top, spacing: Tokens.Space.xs) {
+                        Image(systemName: check.skipped ? "minus.circle" : check.passed ? "checkmark.circle" : "exclamationmark.triangle")
+                            .foregroundStyle(check.skipped ? Tokens.Palette.textSecondary : check.passed ? Tokens.Palette.accent : Tokens.Palette.errorText)
+                        VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+                            Text(check.skipped ? "\(check.name) · Not checked" : check.name)
+                                .font(Tokens.Font.caption.weight(.medium))
+                            Text(check.detail).font(Tokens.Font.caption)
+                                .foregroundStyle(Tokens.Palette.textSecondary).textSelection(.enabled)
+                        }
+                    }
+                }
+                Text("File checks do not replace a viewing check on your headset.")
+                    .font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.textSecondary)
+            }.padding(.top, Tokens.Space.s)
+        } label: {
+            Label(report.passed ? "File checks passed" : "Review file checks",
+                  systemImage: report.passed ? "checkmark.shield" : "exclamationmark.shield")
+                .font(Tokens.Font.bodyMedium)
+        }
+    }
+
+    private func tuningEditing(_ editing: Bool) {
+        if editing { model.beginTuningEdit() } else { model.endTuningEdit() }
+    }
+
+    private func resetDepthParameter(strength: Bool) {
+        model.resetDepthParameter(strength: strength, for: conversion)
+    }
+
+    private var batchSettingsPanel: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.m) {
+            Text("Copy settings").font(Tokens.Font.rowTitle)
+            Text("From \(conversion.displayName) to the other selected videos. Active conversions stay unchanged.")
+                .font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.textSecondary)
+            Toggle("Strength and balance", isOn: $copyDepth)
+            Toggle("Edge cleanup and hidden areas", isOn: $copyCleanup)
+            Toggle("Depth model", isOn: $copyModel)
+            HStack {
+                Button("Cancel") { showBatchSettings = false }
                 Spacer()
-                Text("\(Int(progress * 100))%")
-                    .font(Tokens.Font.monoCaption)
-                    .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
-                    .contentTransition(.numericText())
-            }
-            ProgressView(value: progress)
-                .tint(Tokens.Palette.accent)
-            // Names the file, so a queue of several says which one it is on.
-            Text("Looking at every shot in \(conversion.displayName).")
-                .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.textTertiary)
-                .lineLimit(2)
-                .truncationMode(.middle)
-        }
-    }
-
-    /// Decided. This replaces the gauge: one sentence about the footage, one
-    /// about comfort, and a quiet way to run it again.
-    private func verdict(_ plan: ShotPlan) -> some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            // No checkmark here.
-            //
-            // A filled checkmark in a circle is the universal done symbol, and
-            // this panel put one next to "Depth set for 3 shots" while a
-            // Convert button sat underneath waiting to be pressed. The app was
-            // declaring success on a step and then asking for the real one, so
-            // the reported experience was "it is not clear I am supposed to hit
-            // Convert". Of course it was not. The app had said it was finished.
-            //
-            // This names the state you are in rather than a task you completed,
-            // and then names the next action, which nothing on this screen used
-            // to do.
-            Text("Ready to convert")
-                .font(Tokens.Font.rowTitle)
-                .tracking(Tokens.Tracking.forSize(Tokens.TypeScale.rowTitle))
-                .foregroundStyle(Tokens.Palette.textPrimary)
-
-            Text(readyDetail(plan))
-                .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.textSecondaryVibrant)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineSpacing(Tokens.LineSpacing.labels(Tokens.TypeScale.caption))
-
-            // There is no "do it again" here any more. Auto is deterministic:
-            // same file, same sampling interval, same model, same thresholds,
-            // byte identical result. A button offering to redo it could not
-            // change anything, and offering a redo implies the first answer was
-            // provisional when it was not.
-            //
-            // The one moment a return trip means something is when the dials
-            // have been overridden in Custom, so that is the only moment this
-            // appears. Until then there is nothing here, which is correct.
-            if model.hasDriftedFromAuto(conversion) {
-                Button("Back to automatic") { model.returnToAutomatic(conversion) }
-                    .buttonStyle(.plain)
-                    .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.accent)
-                    .pressable()
-                    .frame(minHeight: Tokens.Layout.minTarget, alignment: .leading)
+                Button("Apply to selection") {
+                    model.applySettingsToSelected(includeDepth: copyDepth, includeCleanup: copyCleanup, includeModel: copyModel)
+                    showBatchSettings = false
+                }.disabled(!copyDepth && !copyCleanup && !copyModel)
             }
         }
+        .padding(Tokens.Space.l).frame(width: 320)
     }
 
     // MARK: Actions
@@ -357,6 +309,7 @@ struct InspectorView: View {
                             .foregroundStyle(Tokens.Palette.textTertiary)
                             .pressable()
                             .help("Convert \(conversion.displayName) again and keep both files.")
+                            .disabled(conversion.sourceMissing)
                     }
                     .font(Tokens.Font.body)
                     .frame(minHeight: Tokens.Layout.minTarget)
@@ -392,9 +345,9 @@ struct InspectorView: View {
                 // reference set does. It was already bound in the menu bar and
                 // never shown, which is a shortcut nobody discovers.
                 ConvertButton(title: convertTitle, state: convertState) {
-                    model.convertSelected()
+                    model.showExportPreflight(for: model.selectedReady)
                 }
-                .help("Convert. Return.")
+                .help("Review export details, then convert. Command Return.")
                 if model.queueRunning {
                     queueControlMenu
                 } else if model.hasUnselectedWork {
@@ -403,7 +356,7 @@ struct InspectorView: View {
                     // saying so, rather than being smuggled into the label of
                     // a button about the selection.
                     Button("Convert all \(model.readyToConvert.count) up next") {
-                        model.convertAllReady()
+                        model.showExportPreflight(for: model.readyToConvert, scope: .allReadyIncludingAdditions)
                     }
                     .buttonStyle(.plain)
                     .font(Tokens.Font.caption)
@@ -415,7 +368,7 @@ struct InspectorView: View {
                 }
             }
         }
-        .frame(height: Tokens.Layout.actionStackHeight, alignment: .top)
+        .frame(minHeight: Tokens.Layout.actionStackHeight, alignment: .top)
     }
 
     private var failedCount: Int {
@@ -544,7 +497,7 @@ struct InspectorView: View {
         if model.queuePhase != .idle { return .disabled }
         if case .failed = conversion.status { return .disabled }
         if model.modelBanner != nil { return .disabled }
-        if conversion.status.isReady || conversion.settingsChangedSinceExport { return .normal }
+        if !model.selectedReady.isEmpty { return .normal }
         return .disabled
     }
 
@@ -552,7 +505,13 @@ struct InspectorView: View {
 
     private var strengthSection: some View {
         VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            SectionLabel(text: "Depth strength")
+            HStack {
+                SectionLabel(text: "Depth strength")
+                Spacer()
+                Button { resetDepthParameter(strength: true) } label: { Image(systemName: "arrow.counterclockwise") }
+                    .buttonStyle(.plain).help("Reset strength to automatic")
+                    .accessibilityLabel("Reset strength to automatic")
+            }
 
             // One segmented well rather than three loose buttons, so it reads
             // as a single decision with three answers.
@@ -560,10 +519,9 @@ struct InspectorView: View {
                 ForEach(EngineTuning.Strength.allCases) { strength in
                     StrengthChip(
                         strength: strength,
-                        isSelected: conversion.tuning.customDisparityPercent == nil
-                            && conversion.tuning.strength == strength
+                        isSelected: abs(effectiveTuning.disparityScale - strength.scale) < 0.000001
                     ) {
-                        var updated = conversion.tuning
+                        var updated = effectiveTuning
                         updated.strength = strength
                         updated.customDisparityPercent = nil
                         model.updateTuning(updated, for: conversion)
@@ -576,14 +534,24 @@ struct InspectorView: View {
                     .fill(Tokens.Palette.controlFillQuiet)
             )
 
-            // Was "How far apart the two eye views are pushed", which is the
-            // mechanism. Nobody buying this owns a pair of eye views. Say what
-            // changes on screen, and say the tradeoff, because more depth
-            // reads as better right up until your eyes give out an hour in.
-            Text(conversion.tuning.strength.explanation)
-                .font(Tokens.Font.caption)
-                .foregroundStyle(Tokens.Palette.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Slider(value: Binding(
+                get: { effectiveTuning.disparityScale * 100 },
+                set: { value in
+                    var updated = effectiveTuning
+                    updated.customDisparityPercent = value
+                    model.updateTuning(updated, for: conversion)
+                }
+            ), in: 0.2...4.0, onEditingChanged: tuningEditing) { Text("Depth strength") }
+            .labelsHidden().tint(Tokens.Palette.accent)
+            .accessibilityValue(String(format: "%.2f percent of frame width", effectiveTuning.disparityScale * 100))
+            HStack {
+                Text("Gentle")
+                Spacer()
+                Text(String(format: "%.2f%%", effectiveTuning.disparityScale * 100)).monospacedDigit()
+                Spacer()
+                Text("Strong")
+            }
+            .font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.textSecondary)
         }
         .accessibilityElement(children: .contain)
     }
@@ -595,16 +563,29 @@ struct InspectorView: View {
     /// picture comes at you or sits back.
     private var balanceSection: some View {
         VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            SectionLabel(text: "Depth balance")
+            HStack {
+                SectionLabel(text: "Depth balance")
+                Spacer()
+                Button { resetDepthParameter(strength: false) } label: { Image(systemName: "arrow.counterclockwise") }
+                    .buttonStyle(.plain).help("Reset balance to automatic")
+                    .accessibilityLabel("Reset balance to automatic")
+            }
 
-            Slider(value: tuning.convergence, in: 0...1) {
+            Slider(value: Binding(
+                get: { 1 - effectiveTuning.convergence },
+                set: { value in
+                    var updated = effectiveTuning
+                    updated.convergence = 1 - value
+                    model.updateTuning(updated, for: conversion)
+                }
+            ), in: 0...1, onEditingChanged: tuningEditing) {
                 Text("Depth balance")
             }
             // The label stays for VoiceOver, but it is not drawn: on macOS a
             // Slider renders its label inline and it read as stray body text.
             .labelsHidden()
             .tint(Tokens.Palette.accent)
-            .help("Convergence: where the screen plane sits, 0 to 1.")
+            .help("Left places more depth behind the screen. Right brings more content toward you.")
             .accessibilityValue(balanceDescription)
 
             HStack {
@@ -629,11 +610,11 @@ struct InspectorView: View {
     /// Says where the balance currently sits in words, so the control explains
     /// itself without a number the user has to interpret.
     private var balanceDescription: String {
-        switch conversion.tuning.convergence {
-        case ..<0.3: return "Most of the picture sits behind the screen."
-        case ..<0.55: return "Balanced. Most of the picture sits at screen depth."
-        case ..<0.8: return "More of the picture comes toward you."
-        default: return "Nearly everything comes toward you. Easy to overdo."
+        switch effectiveTuning.convergence {
+        case ..<0.3: return "More of the picture reaches toward you. Use gently."
+        case ..<0.55: return "Depth extends in front of and behind the screen."
+        case ..<0.8: return "More of the picture sits behind the screen."
+        default: return "Nearly all the picture sits behind the screen, like a window."
         }
     }
 
@@ -667,67 +648,13 @@ struct InspectorView: View {
 
             if showAdvanced {
                 VStack(alignment: .leading, spacing: Tokens.Space.l) {
-                    fineTuneControl
                     gapFillingControl
                     edgeCleanupControl
+                    depthDetailControls
                     playbackGroup
                     modelRow
                 }
                 .transition(.opacity)
-            }
-        }
-    }
-
-    /// Custom disparity percent, renamed. It is the same dial as the preset
-    /// row, just continuous.
-    private var fineTuneControl: some View {
-        VStack(alignment: .leading, spacing: Tokens.Space.xs) {
-            HStack {
-                SectionLabel(text: "Fine-tune strength")
-                Spacer()
-                Toggle("Fine-tune strength", isOn: Binding(
-                    get: { conversion.tuning.customDisparityPercent != nil },
-                    set: { isOn in
-                        var updated = conversion.tuning
-                        updated.customDisparityPercent = isOn
-                            ? conversion.tuning.strength.scale * 100
-                            : nil
-                        model.updateTuning(updated, for: conversion)
-                    }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .tint(Tokens.Palette.accent)
-                .help("Set the strength by hand instead of using the presets.")
-            }
-
-            if let percent = conversion.tuning.customDisparityPercent {
-                HStack(spacing: Tokens.Space.s) {
-                    Slider(
-                        value: Binding(
-                            get: { percent },
-                            set: {
-                                var updated = conversion.tuning
-                                updated.customDisparityPercent = $0
-                                model.updateTuning(updated, for: conversion)
-                            }
-                        ),
-                        in: 0.2...5.0
-                    ) {
-                        Text("Strength")
-                    }
-                    .labelsHidden()
-                    .tint(Tokens.Palette.accent)
-                    .accessibilityValue(String(format: "%.2f percent of frame width", percent))
-
-                    Readout(value: String(format: "%.2f%%", percent))
-                        .font(Tokens.Font.monoCaption)
-                        .frame(width: Tokens.Layout.percentColumn, alignment: .trailing)
-                }
-                Text("Percentage of the picture's width. The presets are 1.0, 1.6, and 2.4.")
-                    .font(Tokens.Font.caption)
-                    .foregroundStyle(Tokens.Palette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -753,9 +680,9 @@ struct InspectorView: View {
                 SectionLabel(text: "Rebuild hidden areas")
                 Spacer()
                 Toggle("Rebuild hidden areas", isOn: Binding(
-                    get: { conversion.tuning.fillDisocclusions },
+                    get: { effectiveTuning.fillDisocclusions },
                     set: {
-                        var updated = conversion.tuning
+                        var updated = effectiveTuning
                         updated.fillDisocclusions = $0
                         model.updateTuning(updated, for: conversion)
                     }
@@ -765,7 +692,7 @@ struct InspectorView: View {
                 .tint(Tokens.Palette.accent)
                 .help("Disocclusion filling from a background plate.")
             }
-            Text("Shifting the picture uncovers areas the camera never showed for that eye. Make It 3D fills them from earlier frames instead of stretching a neighbouring pixel across.")
+            Text("Shifting the picture uncovers areas the camera never showed for that eye. Available earlier frames help fill them; remaining gaps use nearby pixels. Inspect moving edges in a proof.")
                 .font(Tokens.Font.caption)
                 .foregroundStyle(Tokens.Palette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -780,18 +707,37 @@ struct InspectorView: View {
             HStack {
                 SectionLabel(text: "Edge cleanup")
                 Spacer()
-                Readout(value: String(format: "%.1f%%", conversion.tuning.overscan * 100))
+                Readout(value: String(format: "%.1f%%", effectiveTuning.overscan * 100))
                     .font(Tokens.Font.monoCaption)
             }
-            Slider(value: tuning.overscan, in: 0...0.10) { Text("Edge cleanup") }
+            Slider(value: tuning.overscan, in: 0...0.10, onEditingChanged: tuningEditing) { Text("Edge cleanup") }
                 .labelsHidden()
                 .tint(Tokens.Palette.accent)
                 .help("Overscan. Zooms in slightly so the stretched edges fall outside the frame.")
-                .accessibilityValue(String(format: "%.1f percent", conversion.tuning.overscan * 100))
+                .accessibilityValue(String(format: "%.1f percent", effectiveTuning.overscan * 100))
             Text("Crops in a little to hide stretching at the left and right edges.")
                 .font(Tokens.Font.caption)
                 .foregroundStyle(Tokens.Palette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var depthDetailControls: some View {
+        VStack(alignment: .leading, spacing: Tokens.Space.m) {
+            VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+                labelledSlider("Edge detail cleanup", value: tuning.edgeRefinement, range: 0...1,
+                               format: "%.2f", display: effectiveTuning.edgeRefinement,
+                               help: "Softens abrupt depth changes along object edges. Inspect fine detail in a proof.")
+                Text("Higher values reduce abrupt depth edges but can soften fine details.")
+                    .font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.textSecondary)
+            }
+            VStack(alignment: .leading, spacing: Tokens.Space.xxs) {
+                labelledSlider("Moving subject stability", value: tuning.motionRejection, range: 0...1,
+                               format: "%.2f", display: effectiveTuning.motionRejection,
+                               help: "Uses less historical depth where the picture changes. Judge this in a moving proof.")
+                Text("Higher values rely less on older depth around motion. Check for trailing edges and flicker in a proof.")
+                    .font(Tokens.Font.caption).foregroundStyle(Tokens.Palette.textSecondary)
+            }
         }
     }
 
@@ -831,7 +777,7 @@ struct InspectorView: View {
                         value: tuning.horizontalFOVDegrees,
                         range: 30...120,
                         format: "%.1f deg",
-                        display: conversion.tuning.horizontalFOVDegrees,
+                        display: effectiveTuning.horizontalFOVDegrees,
                         help: "Horizontal field of view, in degrees."
                     )
                     labelledSlider(
@@ -839,7 +785,7 @@ struct InspectorView: View {
                         value: tuning.baselineMillimetres,
                         range: 5...80,
                         format: "%.1f mm",
-                        display: conversion.tuning.baselineMillimetres,
+                        display: effectiveTuning.baselineMillimetres,
                         help: "Stereo camera baseline, in millimetres."
                     )
                 }
@@ -854,9 +800,9 @@ struct InspectorView: View {
 
             if VideoDepthEstimator.isAvailable {
                 Picker("Depth reading", selection: Binding(
-                    get: { conversion.tuning.depthModel },
+                    get: { effectiveTuning.depthModel },
                     set: {
-                        var updated = conversion.tuning
+                        var updated = effectiveTuning
                         updated.depthModel = $0
                         model.updateTuning(updated, for: conversion)
                     }
@@ -868,7 +814,7 @@ struct InspectorView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
 
-                Text(conversion.tuning.depthModel.explanation)
+                Text(effectiveTuning.depthModel.explanation)
                     .font(Tokens.Font.caption)
                     .foregroundStyle(Tokens.Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -897,7 +843,7 @@ struct InspectorView: View {
                 Readout(value: String(format: format, display))
                     .font(Tokens.Font.monoCaption)
             }
-            Slider(value: value, in: range) { Text(title) }
+            Slider(value: value, in: range, onEditingChanged: tuningEditing) { Text(title) }
                 .labelsHidden()
                 .tint(Tokens.Palette.accent)
                 .help(help)

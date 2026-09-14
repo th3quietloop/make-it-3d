@@ -75,6 +75,9 @@ enum Disparity {
             values[index] *= forwardScale
         }
 
+        values = refineEdges(values, width: nearness.width, height: nearness.height,
+                             frameWidth: frameWidth, amount: tuning.edgeRefinement)
+
         var maxPositive: Float = 0
         var maxNegative: Float = 0
         vDSP_maxv(values, 1, &maxPositive, vDSP_Length(count))
@@ -87,6 +90,28 @@ enum Disparity {
             maxPositive: max(maxPositive, 0),
             maxNegative: min(maxNegative, 0)
         )
+    }
+
+    /// Bound horizontal jumps before upsampling. A pair of directional passes
+    /// limits both foreground edges without changing a uniform depth plane.
+    static func refineEdges(_ input: [Float], width: Int, height: Int,
+                            frameWidth: Int, amount: Double) -> [Float] {
+        guard width > 1, height > 0, input.count == width * height, amount > 0 else { return input }
+        let blend = Float(min(amount, 1))
+        let maxStep = Float(frameWidth) / Float(width) * 0.6
+        var limited = input
+        for y in 0..<height {
+            let row = y * width
+            for x in 1..<width {
+                let previous = limited[row + x - 1]
+                limited[row + x] = min(max(limited[row + x], previous - maxStep), previous + maxStep)
+            }
+            for x in stride(from: width - 2, through: 0, by: -1) {
+                let next = limited[row + x + 1]
+                limited[row + x] = min(max(limited[row + x], next - maxStep), next + maxStep)
+            }
+        }
+        return zip(input, limited).map { $0 * (1 - blend) + $1 * blend }
     }
 
     enum Eye: Sendable {

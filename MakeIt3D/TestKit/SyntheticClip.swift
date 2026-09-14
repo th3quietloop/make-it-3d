@@ -19,6 +19,9 @@ enum SyntheticClip {
         var durationSeconds = 4
         var sampleRate = 44100.0
         var toneHz = 440.0
+        var audioDurationSeconds: Int? = nil
+        var audioTrackCount = 1
+        var variableFrameRate = false
 
         var frameCount: Int { frameRate * durationSeconds }
     }
@@ -65,22 +68,27 @@ enum SyntheticClip {
             ]
         )
 
-        let audioInput = AVAssetWriterInput(
-            mediaType: .audio,
-            outputSettings: [
+        guard writer.canAdd(videoInput) else {
+            throw GenerationError.setupFailed("The test video input was rejected.")
+        }
+        writer.add(videoInput)
+        var audioInputs: [AVAssetWriterInput] = []
+        for index in 0..<spec.audioTrackCount {
+            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: spec.sampleRate,
                 AVNumberOfChannelsKey: 1,
                 AVEncoderBitRateKey: 96000
-            ]
-        )
-        audioInput.expectsMediaDataInRealTime = false
-
-        guard writer.canAdd(videoInput), writer.canAdd(audioInput) else {
-            throw GenerationError.setupFailed("The test clip inputs were rejected.")
+            ])
+            input.expectsMediaDataInRealTime = false
+            input.languageCode = index == 0 ? "eng" : "spa"
+            input.marksOutputTrackAsEnabled = index == 0
+            guard writer.canAdd(input) else {
+                throw GenerationError.setupFailed("A test audio input was rejected.")
+            }
+            writer.add(input)
+            audioInputs.append(input)
         }
-        writer.add(videoInput)
-        writer.add(audioInput)
 
         guard writer.startWriting() else {
             throw GenerationError.setupFailed(
@@ -101,13 +109,13 @@ enum SyntheticClip {
         // audio timeline lags whatever has been appended. Handing the pull
         // schedule back to AVFoundation removes the whole class of stall.
 
-        let tone = try ToneGenerator(spec: spec)
 
         let videoDriver = TrackDriver(
             input: videoInput,
             label: "relief.synthetic.video"
         ) { index in
             guard index < spec.frameCount else { return false }
+            if spec.variableFrameRate, index >= spec.frameRate, index % 3 != 0 { return true }
             let buffer = try frame(at: index, spec: spec)
             let time = CMTime(value: CMTimeValue(index), timescale: CMTimeScale(spec.frameRate))
             guard adaptor.append(buffer, withPresentationTime: time) else {
@@ -116,20 +124,23 @@ enum SyntheticClip {
             return true
         }
 
-        let audioDriver = TrackDriver(
-            input: audioInput,
-            label: "relief.synthetic.audio"
-        ) { _ in
-            guard let sample = try tone.nextChunk() else { return false }
-            guard audioInput.append(sample) else {
-                throw GenerationError.writeFailed("A tone sample was rejected.")
-            }
-            return true
+        var drivers = [videoDriver]
+        for (index, input) in audioInputs.enumerated() {
+            var audioSpec = spec
+            audioSpec.toneHz = spec.toneHz * Double(index + 1)
+            let tone = try ToneGenerator(spec: audioSpec)
+            drivers.append(TrackDriver(input: input, label: "relief.synthetic.audio.\(index)") { _ in
+                guard let sample = try tone.nextChunk() else { return false }
+                guard input.append(sample) else {
+                    throw GenerationError.writeFailed("A tone sample was rejected.")
+                }
+                return true
+            })
         }
-
-        async let videoWritten: Void = videoDriver.run()
-        async let audioWritten: Void = audioDriver.run()
-        _ = try await (videoWritten, audioWritten)
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for driver in drivers { group.addTask { try await driver.run() } }
+            try await group.waitForAll()
+        }
 
         await writer.finishWriting()
         if writer.status == .failed {
@@ -292,7 +303,7 @@ enum SyntheticClip {
         private let chunkSize = 4096
         private var written = 0
 
-        private var totalSamples: Int { Int(spec.sampleRate * Double(spec.durationSeconds)) }
+        private var totalSamples: Int { Int(spec.sampleRate * Double(spec.audioDurationSeconds ?? spec.durationSeconds)) }
 
         init(spec: Spec) throws {
             self.spec = spec

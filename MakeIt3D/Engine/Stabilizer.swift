@@ -47,12 +47,12 @@ final class Stabilizer {
         NearnessMap(values: normalized(map.values), width: map.width, height: map.height)
     }
 
-    func stabilize(_ map: NearnessMap) -> NearnessMap {
+    func stabilize(_ map: NearnessMap, motion: FrameMotion = .stationary) -> NearnessMap {
         var values = normalized(map.values)
 
         if let previous, previous.count == values.count {
             let delta = meanAbsoluteDifference(values, previous)
-            if delta > Float(tuning.sceneCutThreshold) {
+            if motion.sceneCut || delta > Float(tuning.sceneCutThreshold) {
                 // A cut. Take the new frame whole rather than blending it with
                 // a shot that no longer exists.
                 lastFrameWasSceneCut = true
@@ -60,11 +60,23 @@ final class Stabilizer {
             } else {
                 lastFrameWasSceneCut = false
                 let alpha = Float(tuning.temporalAlpha)
-                // values = alpha * current + (1 - alpha) * previous
-                var a = alpha
-                var b = 1 - alpha
-                var blended = [Float](repeating: 0, count: values.count)
-                vDSP_vsmsma(values, 1, &a, previous, 1, &b, &blended, 1, vDSP_Length(values.count))
+                let dx = Int((motion.translation.x * Float(map.width)).rounded())
+                let dy = Int((motion.translation.y * Float(map.height)).rounded())
+                let rejection = Float(min(max(tuning.motionRejection, 0), 1))
+                var blended = values
+                for y in 0..<map.height {
+                    for x in 0..<map.width {
+                        let index = y * map.width + x
+                        let px = x - dx, py = y - dy
+                        guard px >= 0, px < map.width, py >= 0, py < map.height else { continue }
+                        let old = previous[py * map.width + px]
+                        let disagreement = min(1, abs(values[index] - old) / 0.15)
+                        let localAlpha = min(1, alpha + (1 - alpha) * rejection * disagreement)
+                        let confidence = max(0, min(1, motion.confidence))
+                        let historyWeight = (1 - localAlpha) * confidence
+                        blended[index] = values[index] * (1 - historyWeight) + old * historyWeight
+                    }
+                }
                 values = blended
             }
         } else {
@@ -83,6 +95,7 @@ final class Stabilizer {
     /// only place they exist. Everything downstream sees a full range frame.
     private func normalized(_ input: [Float]) -> [Float] {
         guard !input.isEmpty else { return input }
+        let input = input.map { $0.isFinite ? $0 : 0 }
 
         let (low, high) = percentiles(input)
         let range = high - low

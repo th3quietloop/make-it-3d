@@ -1,4 +1,5 @@
 import Foundation
+import CoreML
 
 /// Every number the depth pipeline uses lives here. The golden set tunes these,
 /// so nothing downstream is allowed to hardcode a constant.
@@ -39,11 +40,11 @@ struct EngineTuning: Sendable, Equatable, Codable {
         var explanation: String {
             switch self {
             case .soft:
-                return "Least depth, least eye strain. Pick this if a film left your eyes tired."
+                return "Subtle depth with less displacement around edges."
             case .standard:
-                return "Default. Clear depth without pushing it, comfortable for a whole film."
+                return "Default. Moderate separation and image reconstruction."
             case .deep:
-                return "Most depth. Great on wide shots and short clips, tiring over two hours."
+                return "More separation. Inspect moving edges and review a short proof before a long export."
             }
         }
     }
@@ -107,7 +108,7 @@ struct EngineTuning: Sendable, Equatable, Codable {
         var label: String {
             switch self {
             case .symmetric: return "Share it"
-            case .leftEyeUntouched: return "Keep one eye perfect"
+            case .leftEyeUntouched: return "Keep source in left eye"
             }
         }
 
@@ -122,7 +123,7 @@ struct EngineTuning: Sendable, Equatable, Codable {
             case .symmetric:
                 return "Both eyes get moved half as far. The patched areas are smaller, but they show up in both eyes at once."
             case .leftEyeUntouched:
-                return "Your left eye sees the film exactly as it was shot, every pixel real. All the patching goes to the right eye. Usually the better trade: one clean eye gives your brain something correct to lock onto."
+                return "The left eye uses source imagery with the same crop as the right eye. Depth displacement and gap filling happen in the right eye."
             }
         }
     }
@@ -149,7 +150,7 @@ struct EngineTuning: Sendable, Equatable, Codable {
             case .perFrame:
                 return "Reads each frame on its own. Depth can drift slightly across a shot, which Make It 3D smooths out."
             case .video:
-                return "Reads a run of frames together, so depth holds perfectly still. Measured at roughly 300 times slower than Normal, so it is only realistic on clips of a few seconds."
+                return "Uses neighboring frames to reduce depth fluctuation. The bundled model measured roughly 300 times slower than Normal, so try a short proof first."
             }
         }
 
@@ -226,11 +227,142 @@ struct EngineTuning: Sendable, Equatable, Codable {
     /// the range -10000...10000 for -1.0...1.0.
     var horizontalDisparityAdjustment: Double = 0.025
 
+    enum ComputePreference: String, Codable, Sendable, CaseIterable, Identifiable {
+        case automatic, neuralEngine, gpu, cpu
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .automatic: return "Automatic"
+            case .neuralEngine: return "Neural Engine + CPU"
+            case .gpu: return "GPU + CPU"
+            case .cpu: return "CPU"
+            }
+        }
+        var units: MLComputeUnits {
+            switch self {
+            case .automatic: return .all
+            case .neuralEngine: return .cpuAndNeuralEngine
+            case .gpu: return .cpuAndGPU
+            case .cpu: return .cpuOnly
+            }
+        }
+    }
+    var computePreference: ComputePreference = .automatic
+
+    /// Blend toward a bounded horizontal disparity slope at depth edges.
+    /// Zero preserves the original field; one uses the fully limited field.
+    var edgeRefinement: Double = 0.35
+    /// Reject historical depth locally when it disagrees with moving content.
+    var motionRejection: Double = 0.65
+
     // MARK: Preview
 
     /// Preview runs at this height when the source is taller, so the judgment
     /// loop stays responsive while export stays full resolution.
     var previewMaxHeight: Int = 720
 
+    init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case strength
+        case customDisparityPercent
+        case convergence
+        case forwardPopScale
+        case invertDisparitySign
+        case overscan
+        case meshVertexSpacing
+        case depthModel
+        case fillDisocclusions
+        case stretchLimit
+        case backgroundLevelFraction
+        case backgroundPlateBlend
+        case synthesis
+        case lowPercentile
+        case highPercentile
+        case temporalAlpha
+        case sceneCutThreshold
+        case bilateralSpatialSigma
+        case bilateralLumaSigma
+        case horizontalFOVDegrees
+        case baselineMillimetres
+        case horizontalDisparityAdjustment
+        case computePreference
+        case edgeRefinement
+        case motionRejection
+        case previewMaxHeight
+    }
+
+    init(from decoder: Decoder) throws {
+        self.init()
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        strength = try values.decodeIfPresent(Strength.self, forKey: .strength) ?? strength
+        customDisparityPercent = try values.decodeIfPresent(Double.self, forKey: .customDisparityPercent)
+        convergence = try values.decodeIfPresent(Double.self, forKey: .convergence) ?? convergence
+        forwardPopScale = try values.decodeIfPresent(Double.self, forKey: .forwardPopScale) ?? forwardPopScale
+        invertDisparitySign = try values.decodeIfPresent(Bool.self, forKey: .invertDisparitySign) ?? invertDisparitySign
+        overscan = try values.decodeIfPresent(Double.self, forKey: .overscan) ?? overscan
+        meshVertexSpacing = try values.decodeIfPresent(Int.self, forKey: .meshVertexSpacing) ?? meshVertexSpacing
+        depthModel = try values.decodeIfPresent(DepthModel.self, forKey: .depthModel) ?? depthModel
+        fillDisocclusions = try values.decodeIfPresent(Bool.self, forKey: .fillDisocclusions) ?? fillDisocclusions
+        stretchLimit = try values.decodeIfPresent(Double.self, forKey: .stretchLimit) ?? stretchLimit
+        backgroundLevelFraction = try values.decodeIfPresent(Double.self, forKey: .backgroundLevelFraction) ?? backgroundLevelFraction
+        backgroundPlateBlend = try values.decodeIfPresent(Double.self, forKey: .backgroundPlateBlend) ?? backgroundPlateBlend
+        synthesis = try values.decodeIfPresent(Synthesis.self, forKey: .synthesis) ?? synthesis
+        lowPercentile = try values.decodeIfPresent(Double.self, forKey: .lowPercentile) ?? lowPercentile
+        highPercentile = try values.decodeIfPresent(Double.self, forKey: .highPercentile) ?? highPercentile
+        temporalAlpha = try values.decodeIfPresent(Double.self, forKey: .temporalAlpha) ?? temporalAlpha
+        sceneCutThreshold = try values.decodeIfPresent(Double.self, forKey: .sceneCutThreshold) ?? sceneCutThreshold
+        bilateralSpatialSigma = try values.decodeIfPresent(Double.self, forKey: .bilateralSpatialSigma) ?? bilateralSpatialSigma
+        bilateralLumaSigma = try values.decodeIfPresent(Double.self, forKey: .bilateralLumaSigma) ?? bilateralLumaSigma
+        horizontalFOVDegrees = try values.decodeIfPresent(Double.self, forKey: .horizontalFOVDegrees) ?? horizontalFOVDegrees
+        baselineMillimetres = try values.decodeIfPresent(Double.self, forKey: .baselineMillimetres) ?? baselineMillimetres
+        horizontalDisparityAdjustment = try values.decodeIfPresent(Double.self, forKey: .horizontalDisparityAdjustment) ?? horizontalDisparityAdjustment
+        computePreference = try values.decodeIfPresent(ComputePreference.self, forKey: .computePreference) ?? computePreference
+        edgeRefinement = try values.decodeIfPresent(Double.self, forKey: .edgeRefinement) ?? edgeRefinement
+        motionRejection = try values.decodeIfPresent(Double.self, forKey: .motionRejection) ?? motionRejection
+        previewMaxHeight = try values.decodeIfPresent(Int.self, forKey: .previewMaxHeight) ?? previewMaxHeight
+        try validate()
+    }
+
+    func validate() throws {
+        let ranged: [(String, Double, ClosedRange<Double>)] = [
+            ("Depth balance", convergence, 0...1),
+            ("Forward depth", forwardPopScale, 0...1),
+            ("Edge cleanup", overscan, 0...0.2),
+            ("Stretch limit", stretchLimit, 1...10),
+            ("Background threshold", backgroundLevelFraction, 0...1),
+            ("Background blend", backgroundPlateBlend, 0...1),
+            ("Temporal blend", temporalAlpha, 0...1),
+            ("Cut threshold", sceneCutThreshold, 0...1),
+            ("Spatial smoothing", bilateralSpatialSigma, 0.001...32),
+            ("Luma smoothing", bilateralLumaSigma, 0.001...1),
+            ("Field of view", horizontalFOVDegrees, 1...179),
+            ("Camera baseline", baselineMillimetres, 0...1000),
+            ("Disparity metadata", horizontalDisparityAdjustment, -1...1),
+            ("Edge refinement", edgeRefinement, 0...1),
+            ("Motion rejection", motionRejection, 0...1)
+        ]
+        for (name, value, range) in ranged where !value.isFinite || !range.contains(value) {
+            throw EngineValidationError.invalid(name)
+        }
+        if let customDisparityPercent,
+           !customDisparityPercent.isFinite || !(0...4).contains(customDisparityPercent) {
+            throw EngineValidationError.invalid("Depth strength")
+        }
+        guard (1...64).contains(meshVertexSpacing), (64...2160).contains(previewMaxHeight),
+              lowPercentile.isFinite, highPercentile.isFinite,
+              0 <= lowPercentile, lowPercentile < highPercentile, highPercentile <= 1 else {
+            throw EngineValidationError.invalid("Depth sampling")
+        }
+    }
+
     static let `default` = EngineTuning()
+}
+
+
+enum EngineValidationError: LocalizedError {
+    case invalid(String)
+    var errorDescription: String? {
+        switch self { case .invalid(let name): return "\(name) is outside the supported range." }
+    }
 }
