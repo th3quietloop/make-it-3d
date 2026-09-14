@@ -150,8 +150,10 @@ private actor ShotThumbnailLoader {
             active = AVAssetImageGenerator(asset: AVURLAsset(url: url))
             active.appliesPreferredTrackTransform = true
             active.maximumSize = CGSize(width: 400, height: 225)
-            active.requestedTimeToleranceBefore = CMTime(seconds: 0.1, preferredTimescale: 600)
-            active.requestedTimeToleranceAfter = CMTime(seconds: 0.1, preferredTimescale: 600)
+            // A thumbnail labels and navigates to this exact moment. Neighboring
+            // frames can have visibly different motion, even within 0.1 seconds.
+            active.requestedTimeToleranceBefore = .zero
+            active.requestedTimeToleranceAfter = .zero
             generator = active
             generatorURL = url
         }
